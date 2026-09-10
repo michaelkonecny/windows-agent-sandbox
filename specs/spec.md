@@ -203,7 +203,6 @@ Run all PoCs before starting implementation.
 
 - Bindlink cross-user behaviour — confirm that a bind link created by an admin is visible and functional for the sandbox user account. PoC: (1) create a sandbox user, (2) create a bind link mapping a folder into the sandbox user's home, (3) run a command as the sandbox user that reads/writes via the bind link.
 - Restricted token + bind link interaction — confirm that a process running under a fully restricted token (not WRITE_RESTRICTED) can traverse bind links when the synthetic SID has ACLs on the backing path. PoC: (1) create a restricted token with a synthetic SID, (2) ACL a test folder for that SID, (3) create a bind link to that folder, (4) launch a process under the restricted token and verify it can read/write through the bind link.
-- Minimum viable system path set — determine the smallest set of system paths needed for an agent (Claude Code specifically) to function. Start with `C:\Windows`, `C:\Program Files`, Python/Git/Node dirs, temp dirs. Run Claude Code under a restricted token and iterate until it works.
 
 ### Tech stack
 
