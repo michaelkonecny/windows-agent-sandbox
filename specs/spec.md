@@ -197,18 +197,27 @@ The proxy runs on a single port. All sandboxes share the same `HTTPS_PROXY` addr
 
 Multiple sandboxes with different network presets run concurrently — the proxy routes per-PID, WFP provides a uniform backstop.
 
-### Assumptions to validate
+### Assumptions validated
 
-Run all PoCs before starting implementation.
+Both PoCs pass on Windows 11 build 22621. Code in `poc/`.
 
-- Bindlink cross-user behaviour — confirm that a bind link created by an admin is visible and functional for the sandbox user account. PoC: (1) create a sandbox user, (2) create a bind link mapping a folder into the sandbox user's home, (3) run a command as the sandbox user that reads/writes via the bind link.
-- Restricted token + bind link interaction — confirm that a process running under a fully restricted token (not WRITE_RESTRICTED) can traverse bind links when the synthetic SID has ACLs on the backing path. PoC: (1) create a restricted token with a synthetic SID, (2) ACL a test folder for that SID, (3) create a bind link to that folder, (4) launch a process under the restricted token and verify it can read/write through the bind link.
+- Bindlink cross-user behaviour — **confirmed**. A bind link created by an admin (via `BfSetupFilter`) is visible and functional for a different local user account. The sandbox user can read and write through the link; writes land in the backing directory.
+- Restricted token + bind link interaction — **confirmed**. A fully restricted token (not WRITE_RESTRICTED) with a synthetic SID in `RestrictedSids` can read and write through bind links when the backing path has an ACE for that SID. Access to paths without a matching ACE is correctly denied.
+
+### API findings from PoCs
+
+Discoveries that affect the engine implementation:
+
+- Use `BfSetupFilter`/`BfRemoveMapping` from `bindfltapi.dll` — the lower-level bind filter API available on build 22621+. The higher-level `CreateBindLink`/`RemoveBindLink` (in `KernelBase.dll`) require build 25314+.
+- `BfRemoveMapping` takes two parameters `(HANDLE JobHandle, LPCWSTR VirtualizationRootPath)`, matching `BfSetupFilter`. Pass `NULL` for a global (non-job-scoped) mapping.
+- Use the Win32 ACL API (`SetEntriesInAcl` + `SetNamedSecurityInfo`) for synthetic SIDs — `icacls` rejects non-account SIDs with `ERROR_NONE_MAPPED` (1332). The `*S-1-...` syntax only works for SIDs that resolve to a known account.
+- `CreateRestrictedToken` with `DISABLE_MAX_PRIVILEGE` and a `RestrictedSids` list containing `[per_sandbox_sid, BUILTIN\Users]` produces the correct access behaviour: the per-sandbox SID gates mount access, while `BUILTIN\Users` allows read access to system paths whose DACLs grant the Users group.
 
 ### Tech stack
 
 - Python — engine library, CLI, and TUI.
 - Textual or similar — TUI framework (decision deferred).
-- Windows APIs via ctypes or pywin32 — Bindlink (`CreateBindLink`/`RemoveBindLink`), user account management (`NetUserAdd`/`NetUserDel`), NTFS ACLs, WFP rules.
+- Windows APIs via ctypes — bind filter (`BfSetupFilter`/`BfRemoveMapping`), user account management (`NetUserAdd`/`NetUserDel`), NTFS ACLs (`SetEntriesInAcl`/`SetNamedSecurityInfo`), restricted tokens (`CreateRestrictedToken`), WFP rules.
 - Local proxy — implementation TBD (could be a lightweight Python HTTPS proxy or an existing tool like `mitmproxy` in transparent mode).
 
 ---
