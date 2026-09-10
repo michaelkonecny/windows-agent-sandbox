@@ -1,6 +1,6 @@
 # Windows Agent Sandbox — Spec
 
-Status: draft
+Status: approved
 Last updated: 2026-09-10
 
 ## Goal
