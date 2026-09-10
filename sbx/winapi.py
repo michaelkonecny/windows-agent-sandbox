@@ -13,6 +13,7 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 netapi32 = ctypes.WinDLL("netapi32", use_last_error=True)
 crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
 shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+bindfltapi = ctypes.WinDLL("bindfltapi", use_last_error=True)
 
 # ── Constants ───────────────────────────────────────────────
 
@@ -43,12 +44,17 @@ NERR_UserNotFound = 2221
 
 SE_FILE_OBJECT = 1
 DACL_SECURITY_INFORMATION = 0x00000004
+PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
 GRANT_ACCESS = 1
+SET_ACCESS = 2
+REVOKE_ACCESS = 4
 NO_MULTIPLE_TRUSTEE = 0
 TRUSTEE_IS_SID = 0
 TRUSTEE_IS_UNKNOWN = 0
 SUB_CONTAINERS_AND_OBJECTS_INHERIT = 0x03
 FILE_ALL_ACCESS = 0x001F01FF
+FILE_GENERIC_READ = 0x00120089
+FILE_GENERIC_WRITE = 0x00120116
 
 BINDFLT_FLAG_READ_ONLY_MAPPING = 0x00000001
 
@@ -59,6 +65,13 @@ INFINITE = 0xFFFFFFFF
 
 SEE_MASK_NOCLOSEPROCESS = 0x00000040
 SW_HIDE = 0
+
+TokenPrivileges = 3
+TokenRestrictedSids = 11
+SE_PRIVILEGE_ENABLED = 0x00000002
+
+TokenPrimary = 1
+SecurityImpersonation = 2
 
 # ── Structures ──────────────────────────────────────────────
 
@@ -114,7 +127,53 @@ class SHELLEXECUTEINFOW(ctypes.Structure):
     ]
 
 
+class TRUSTEE_W(ctypes.Structure):
+    _fields_ = [
+        ("pMultipleTrustee", ctypes.c_void_p),
+        ("MultipleTrusteeOperation", wintypes.DWORD),
+        ("TrusteeForm", wintypes.DWORD),
+        ("TrusteeType", wintypes.DWORD),
+        ("ptstrName", ctypes.c_void_p),
+    ]
+
+
+class EXPLICIT_ACCESS_W(ctypes.Structure):
+    _fields_ = [
+        ("grfAccessPermissions", wintypes.DWORD),
+        ("grfAccessMode", wintypes.DWORD),
+        ("grfInheritance", wintypes.DWORD),
+        ("Trustee", TRUSTEE_W),
+    ]
+
+
+class LUID(ctypes.Structure):
+    _fields_ = [
+        ("LowPart", wintypes.DWORD),
+        ("HighPart", wintypes.LONG),
+    ]
+
+
+class LUID_AND_ATTRIBUTES(ctypes.Structure):
+    _fields_ = [
+        ("Luid", LUID),
+        ("Attributes", wintypes.DWORD),
+    ]
+
+
 # ── Function prototypes ────────────────────────────────────
+
+# Bind filter
+bindfltapi.BfSetupFilter.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD,
+    wintypes.LPCWSTR, wintypes.LPCWSTR,
+    ctypes.c_void_p, wintypes.DWORD,
+]
+bindfltapi.BfSetupFilter.restype = wintypes.LONG
+
+bindfltapi.BfRemoveMapping.argtypes = [
+    wintypes.HANDLE, wintypes.LPCWSTR,
+]
+bindfltapi.BfRemoveMapping.restype = wintypes.LONG
 
 # SID
 advapi32.AllocateAndInitializeSid.argtypes = [
@@ -141,14 +200,73 @@ advapi32.ConvertStringSidToSidW.argtypes = [
 ]
 advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
 
+# ACL
+advapi32.GetNamedSecurityInfoW.argtypes = [
+    wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+    ctypes.c_void_p, ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_void_p),
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_void_p),
+]
+advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+
+advapi32.SetEntriesInAclW.argtypes = [
+    wintypes.ULONG,
+    ctypes.POINTER(EXPLICIT_ACCESS_W),
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_void_p),
+]
+advapi32.SetEntriesInAclW.restype = wintypes.DWORD
+
+advapi32.SetNamedSecurityInfoW.argtypes = [
+    wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD,
+    ctypes.c_void_p, ctypes.c_void_p,
+    ctypes.c_void_p, ctypes.c_void_p,
+]
+advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+
+# Token
+advapi32.OpenProcessToken.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD,
+    ctypes.POINTER(wintypes.HANDLE),
+]
+advapi32.OpenProcessToken.restype = wintypes.BOOL
+
+advapi32.CreateRestrictedToken.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD,
+    wintypes.DWORD, ctypes.c_void_p,
+    wintypes.DWORD, ctypes.c_void_p,
+    wintypes.DWORD, ctypes.c_void_p,
+    ctypes.POINTER(wintypes.HANDLE),
+]
+advapi32.CreateRestrictedToken.restype = wintypes.BOOL
+
+advapi32.DuplicateTokenEx.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD,
+    ctypes.c_void_p, wintypes.DWORD,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.HANDLE),
+]
+advapi32.DuplicateTokenEx.restype = wintypes.BOOL
+
+advapi32.GetTokenInformation.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD,
+    ctypes.c_void_p, wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+]
+advapi32.GetTokenInformation.restype = wintypes.BOOL
+
+advapi32.ImpersonateLoggedOnUser.argtypes = [wintypes.HANDLE]
+advapi32.ImpersonateLoggedOnUser.restype = wintypes.BOOL
+
+advapi32.RevertToSelf.argtypes = []
+advapi32.RevertToSelf.restype = wintypes.BOOL
+
 # DPAPI
 crypt32.CryptProtectData.argtypes = [
-    ctypes.POINTER(DATA_BLOB),
-    wintypes.LPCWSTR,
-    ctypes.POINTER(DATA_BLOB),
-    ctypes.c_void_p,
-    ctypes.c_void_p,
-    wintypes.DWORD,
+    ctypes.POINTER(DATA_BLOB), wintypes.LPCWSTR,
+    ctypes.POINTER(DATA_BLOB), ctypes.c_void_p,
+    ctypes.c_void_p, wintypes.DWORD,
     ctypes.POINTER(DATA_BLOB),
 ]
 crypt32.CryptProtectData.restype = wintypes.BOOL
@@ -156,18 +274,15 @@ crypt32.CryptProtectData.restype = wintypes.BOOL
 crypt32.CryptUnprotectData.argtypes = [
     ctypes.POINTER(DATA_BLOB),
     ctypes.POINTER(wintypes.LPWSTR),
-    ctypes.POINTER(DATA_BLOB),
-    ctypes.c_void_p,
-    ctypes.c_void_p,
-    wintypes.DWORD,
+    ctypes.POINTER(DATA_BLOB), ctypes.c_void_p,
+    ctypes.c_void_p, wintypes.DWORD,
     ctypes.POINTER(DATA_BLOB),
 ]
 crypt32.CryptUnprotectData.restype = wintypes.BOOL
 
 # User management
 netapi32.NetUserAdd.argtypes = [
-    wintypes.LPCWSTR,
-    wintypes.DWORD,
+    wintypes.LPCWSTR, wintypes.DWORD,
     ctypes.POINTER(USER_INFO_1),
     ctypes.POINTER(wintypes.DWORD),
 ]
@@ -177,9 +292,7 @@ netapi32.NetUserDel.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
 netapi32.NetUserDel.restype = wintypes.DWORD
 
 netapi32.NetUserGetInfo.argtypes = [
-    wintypes.LPCWSTR,
-    wintypes.LPCWSTR,
-    wintypes.DWORD,
+    wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
     ctypes.POINTER(ctypes.c_void_p),
 ]
 netapi32.NetUserGetInfo.restype = wintypes.DWORD
@@ -254,11 +367,272 @@ def sid_to_string(sid_ptr: int) -> str:
 
 
 def string_to_sid(sid_string: str) -> int:
+    """Returns SID pointer allocated by LocalAlloc. Free with LocalFree."""
     sid = ctypes.c_void_p()
     ok = advapi32.ConvertStringSidToSidW(sid_string, ctypes.byref(sid))
     if not ok:
         raise ctypes.WinError(ctypes.get_last_error())
     return sid.value
+
+
+# Bind link helpers
+
+def create_bind_link(virtual_path: str, backing_path: str) -> None:
+    hr = bindfltapi.BfSetupFilter(
+        None, 0, virtual_path, backing_path, None, 0
+    )
+    if hr < 0:
+        raise OSError(
+            f"BfSetupFilter failed: HRESULT 0x{hr & 0xFFFFFFFF:08X}"
+        )
+
+
+def remove_bind_link(virtual_path: str) -> None:
+    hr = bindfltapi.BfRemoveMapping(None, virtual_path)
+    if hr < 0:
+        E_INVALIDARG = -2147024809
+        NOT_FOUND = -2147024894
+        if hr in (NOT_FOUND, E_INVALIDARG):
+            return
+        raise OSError(
+            f"BfRemoveMapping failed: HRESULT 0x{hr & 0xFFFFFFFF:08X}"
+        )
+
+
+# ACL helpers
+
+def grant_sid_access(
+    path: str, sid_ptr: int, access_mask: int = FILE_ALL_ACCESS
+) -> None:
+    dacl = ctypes.c_void_p()
+    sd = ctypes.c_void_p()
+    err = advapi32.GetNamedSecurityInfoW(
+        path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        None, None, ctypes.byref(dacl), None, ctypes.byref(sd),
+    )
+    if err != 0:
+        raise OSError(f"GetNamedSecurityInfoW failed: error {err}")
+
+    ea = EXPLICIT_ACCESS_W()
+    ea.grfAccessPermissions = access_mask
+    ea.grfAccessMode = SET_ACCESS
+    ea.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT
+    ea.Trustee.pMultipleTrustee = None
+    ea.Trustee.MultipleTrusteeOperation = NO_MULTIPLE_TRUSTEE
+    ea.Trustee.TrusteeForm = TRUSTEE_IS_SID
+    ea.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN
+    ea.Trustee.ptstrName = sid_ptr
+
+    new_dacl = ctypes.c_void_p()
+    err = advapi32.SetEntriesInAclW(
+        1, ctypes.byref(ea), dacl, ctypes.byref(new_dacl)
+    )
+    if err != 0:
+        kernel32.LocalFree(sd)
+        raise OSError(f"SetEntriesInAclW failed: error {err}")
+
+    path_buf = ctypes.create_unicode_buffer(path)
+    err = advapi32.SetNamedSecurityInfoW(
+        path_buf, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        None, None, new_dacl, None,
+    )
+    kernel32.LocalFree(sd)
+    kernel32.LocalFree(new_dacl)
+    if err != 0:
+        raise OSError(f"SetNamedSecurityInfoW failed: error {err}")
+
+
+def remove_sid_access(path: str, sid_ptr: int) -> None:
+    dacl = ctypes.c_void_p()
+    sd = ctypes.c_void_p()
+    err = advapi32.GetNamedSecurityInfoW(
+        path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        None, None, ctypes.byref(dacl), None, ctypes.byref(sd),
+    )
+    if err != 0:
+        raise OSError(f"GetNamedSecurityInfoW failed: error {err}")
+
+    ea = EXPLICIT_ACCESS_W()
+    ea.grfAccessPermissions = 0
+    ea.grfAccessMode = REVOKE_ACCESS
+    ea.grfInheritance = 0
+    ea.Trustee.pMultipleTrustee = None
+    ea.Trustee.MultipleTrusteeOperation = NO_MULTIPLE_TRUSTEE
+    ea.Trustee.TrusteeForm = TRUSTEE_IS_SID
+    ea.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN
+    ea.Trustee.ptstrName = sid_ptr
+
+    new_dacl = ctypes.c_void_p()
+    err = advapi32.SetEntriesInAclW(
+        1, ctypes.byref(ea), dacl, ctypes.byref(new_dacl)
+    )
+    if err != 0:
+        kernel32.LocalFree(sd)
+        raise OSError(f"SetEntriesInAclW failed: error {err}")
+
+    path_buf = ctypes.create_unicode_buffer(path)
+    err = advapi32.SetNamedSecurityInfoW(
+        path_buf, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        None, None, new_dacl, None,
+    )
+    kernel32.LocalFree(sd)
+    kernel32.LocalFree(new_dacl)
+    if err != 0:
+        raise OSError(f"SetNamedSecurityInfoW failed: error {err}")
+
+
+# Token helpers
+
+def open_process_token(
+    access: int = TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY,
+) -> int:
+    token = wintypes.HANDLE()
+    ok = advapi32.OpenProcessToken(
+        kernel32.GetCurrentProcess(), access, ctypes.byref(token)
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return token.value
+
+
+def create_restricted_token(
+    token_handle: int,
+    flags: int,
+    restricted_sid_ptrs: list[int],
+) -> int:
+    count = len(restricted_sid_ptrs)
+    arr = (SID_AND_ATTRIBUTES * count)()
+    for i, ptr in enumerate(restricted_sid_ptrs):
+        arr[i].Sid = ptr
+        arr[i].Attributes = 0
+
+    new_token = wintypes.HANDLE()
+    ok = advapi32.CreateRestrictedToken(
+        token_handle, flags,
+        0, None, 0, None,
+        count, ctypes.byref(arr) if count else None,
+        ctypes.byref(new_token),
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return new_token.value
+
+
+def duplicate_token(
+    token_handle: int,
+    access: int = TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY,
+    token_type: int = TokenPrimary,
+) -> int:
+    new_token = wintypes.HANDLE()
+    ok = advapi32.DuplicateTokenEx(
+        token_handle, access, None,
+        SecurityImpersonation, token_type,
+        ctypes.byref(new_token),
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return new_token.value
+
+
+def get_token_restricted_sids(token_handle: int) -> list[str]:
+    length = wintypes.DWORD()
+    advapi32.GetTokenInformation(
+        token_handle, TokenRestrictedSids, None, 0, ctypes.byref(length)
+    )
+
+    buf = (ctypes.c_ubyte * length.value)()
+    ok = advapi32.GetTokenInformation(
+        token_handle, TokenRestrictedSids,
+        buf, length.value, ctypes.byref(length),
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    count = wintypes.DWORD.from_buffer_copy(buf).value
+
+    class _TOKEN_GROUPS(ctypes.Structure):
+        _fields_ = [
+            ("GroupCount", wintypes.DWORD),
+            ("Groups", SID_AND_ATTRIBUTES * max(count, 1)),
+        ]
+
+    tg = _TOKEN_GROUPS.from_buffer_copy(buf)
+    return [sid_to_string(tg.Groups[i].Sid) for i in range(count)]
+
+
+def get_token_enabled_privilege_count(token_handle: int) -> int:
+    length = wintypes.DWORD()
+    advapi32.GetTokenInformation(
+        token_handle, TokenPrivileges, None, 0, ctypes.byref(length)
+    )
+
+    buf = (ctypes.c_ubyte * length.value)()
+    ok = advapi32.GetTokenInformation(
+        token_handle, TokenPrivileges,
+        buf, length.value, ctypes.byref(length),
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    count = wintypes.DWORD.from_buffer_copy(buf).value
+
+    class _TOKEN_PRIVILEGES(ctypes.Structure):
+        _fields_ = [
+            ("PrivilegeCount", wintypes.DWORD),
+            ("Privileges", LUID_AND_ATTRIBUTES * max(count, 1)),
+        ]
+
+    tp = _TOKEN_PRIVILEGES.from_buffer_copy(buf)
+    enabled = 0
+    for i in range(count):
+        if tp.Privileges[i].Attributes & SE_PRIVILEGE_ENABLED:
+            enabled += 1
+    return enabled
+
+
+def impersonate_token(token_handle: int) -> None:
+    ok = advapi32.ImpersonateLoggedOnUser(token_handle)
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def revert_to_self() -> None:
+    ok = advapi32.RevertToSelf()
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def set_protected_dacl(
+    path: str, sid_access_pairs: list[tuple[int, int]]
+) -> None:
+    count = len(sid_access_pairs)
+    arr = (EXPLICIT_ACCESS_W * count)()
+    for i, (sid_ptr, access_mask) in enumerate(sid_access_pairs):
+        arr[i].grfAccessPermissions = access_mask
+        arr[i].grfAccessMode = SET_ACCESS
+        arr[i].grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT
+        arr[i].Trustee.pMultipleTrustee = None
+        arr[i].Trustee.MultipleTrusteeOperation = NO_MULTIPLE_TRUSTEE
+        arr[i].Trustee.TrusteeForm = TRUSTEE_IS_SID
+        arr[i].Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN
+        arr[i].Trustee.ptstrName = sid_ptr
+
+    new_dacl = ctypes.c_void_p()
+    err = advapi32.SetEntriesInAclW(
+        count, arr, None, ctypes.byref(new_dacl)
+    )
+    if err != 0:
+        raise OSError(f"SetEntriesInAclW failed: error {err}")
+
+    path_buf = ctypes.create_unicode_buffer(path)
+    err = advapi32.SetNamedSecurityInfoW(
+        path_buf, SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+        None, None, new_dacl, None,
+    )
+    kernel32.LocalFree(new_dacl)
+    if err != 0:
+        raise OSError(f"SetNamedSecurityInfoW failed: error {err}")
 
 
 # DPAPI helpers
