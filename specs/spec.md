@@ -106,14 +106,16 @@ See Network mechanism for implementation details.
 
 ```
 sbx install                 # one-time setup (elevated)
-sbx create <name>           # sets up sandbox from config
-sbx start <name>            # opens interactive shell inside sandbox
-sbx stop <name>             # terminates sandbox processes
-sbx destroy <name>          # tears down sandbox
+sbx create [--name alias]   # sets up sandbox from .sandbox/config.json (elevated)
+sbx start [name]            # opens interactive shell inside sandbox
+sbx stop [name]             # terminates sandbox processes
+sbx destroy [name]          # tears down sandbox (elevated)
 sbx list                    # shows all sandboxes and their state
-sbx status <name>           # detailed status of one sandbox
+sbx status [name]           # detailed status of one sandbox
 sbx uninstall               # removes all sandbox infrastructure (elevated)
 ```
+
+`[name]` — optional sandbox name (alias). Defaults to current project directory name. Can also be a project path for disambiguation.
 
 The tool runs unprivileged. Operations that need admin (user account creation, bind links, WFP rules, ACLs) request elevation for just that action via UAC prompt. The user never has to launch the whole tool as admin.
 
