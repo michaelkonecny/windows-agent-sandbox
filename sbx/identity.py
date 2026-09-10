@@ -59,7 +59,8 @@ def install_user(credentials_path: Path | None = None) -> str:
     if created:
         log.info("created user %s", SANDBOX_USER)
     else:
-        log.info("user %s already exists", SANDBOX_USER)
+        winapi.set_user_password(SANDBOX_USER, password)
+        log.info("user %s already exists, password reset", SANDBOX_USER)
 
     store_credentials(SANDBOX_USER, password, credentials_path)
     return SANDBOX_USER

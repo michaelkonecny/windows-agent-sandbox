@@ -85,3 +85,48 @@ def _op_ping(**kwargs) -> dict:
 @register("fail")
 def _op_fail(**kwargs) -> dict:
     raise ElevationError("intentional failure")
+
+
+@register("install_user")
+def _op_install_user(**kwargs) -> dict:
+    from sbx.identity import install_user
+
+    credentials_path = kwargs.get("credentials_path")
+    if credentials_path:
+        from pathlib import Path
+        credentials_path = Path(credentials_path)
+    install_user(credentials_path=credentials_path)
+    return {"installed": True}
+
+
+@register("grant_access")
+def _op_grant_access(**kwargs) -> dict:
+    import subprocess
+    path = kwargs["path"]
+    user = kwargs.get("user", "sbx-user")
+    subprocess.run(
+        ["icacls", path, "/grant", f"{user}:(OI)(CI)RX", "/T"],
+        check=True, capture_output=True, text=True,
+    )
+    return {"granted": True}
+
+
+@register("setup_test_env")
+def _op_setup_test_env(**kwargs) -> dict:
+    import secrets
+    import subprocess
+    from sbx import winapi
+    from sbx.identity import SANDBOX_USER
+
+    password = secrets.token_urlsafe(32)
+    created = winapi.create_user(SANDBOX_USER, password)
+    if not created:
+        winapi.set_user_password(SANDBOX_USER, password)
+
+    user = kwargs.get("user", SANDBOX_USER)
+    for path in kwargs.get("grant_paths", []):
+        subprocess.run(
+            ["icacls", path, "/grant", f"{user}:(OI)(CI)RX", "/T"],
+            check=True, capture_output=True, text=True,
+        )
+    return {"password": password}

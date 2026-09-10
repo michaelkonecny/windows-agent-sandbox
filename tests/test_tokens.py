@@ -36,6 +36,7 @@ def test_restricted_sids():
         restricted = winapi.get_token_restricted_sids(token)
         assert sid_str in restricted
         assert winapi.BUILTIN_USERS_SID in restricted
+        assert winapi.EVERYONE_SID in restricted
     finally:
         winapi.close_handle(token)
 

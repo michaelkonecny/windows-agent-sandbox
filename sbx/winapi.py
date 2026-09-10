@@ -27,6 +27,7 @@ DOMAIN_ALIAS_RID_USERS = 545
 DOMAIN_ALIAS_RID_ADMINS = 544
 
 BUILTIN_USERS_SID = "S-1-5-32-545"
+EVERYONE_SID = "S-1-1-0"
 BUILTIN_ADMINS_SID = "S-1-5-32-544"
 
 DISABLE_MAX_PRIVILEGE = 0x1
@@ -698,6 +699,22 @@ def create_user(name: str, password: str) -> bool:
     return True
 
 
+def set_user_password(name: str, password: str) -> None:
+    class USER_INFO_1003(ctypes.Structure):
+        _fields_ = [("usri1003_password", wintypes.LPWSTR)]
+
+    ui = USER_INFO_1003()
+    ui.usri1003_password = password
+    parm_err = wintypes.DWORD()
+    status = netapi32.NetUserSetInfo(
+        None, name, 1003, ctypes.byref(ui), ctypes.byref(parm_err),
+    )
+    if status != NERR_Success:
+        raise OSError(
+            f"NetUserSetInfo failed: status {status}, parm_err {parm_err.value}"
+        )
+
+
 def delete_user(name: str) -> None:
     status = netapi32.NetUserDel(None, name)
     if status not in (NERR_Success, NERR_UserNotFound):
@@ -740,3 +757,563 @@ def wait_for_process(handle: int) -> int:
 def close_handle(handle: int) -> None:
     if handle:
         kernel32.CloseHandle(handle)
+
+
+# ── Phase 4: Process launch ────────────────────────────────
+
+# Constants
+
+STARTF_USESTDHANDLES = 0x00000100
+EXTENDED_STARTUPINFO_PRESENT = 0x00080000
+CREATE_NEW_CONSOLE = 0x00000010
+CREATE_SUSPENDED = 0x00000004
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+
+PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 0x00020016
+
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+JobObjectExtendedLimitInformation = 9
+JOB_OBJECT_TERMINATE = 0x00000008
+JOB_OBJECT_SET_ATTRIBUTES = 0x00000002
+JOB_OBJECT_QUERY = 0x00000004
+JOB_OBJECT_ASSIGN_PROCESS = 0x00000001
+JOB_OBJECT_ALL_ACCESS = 0x001F001F
+
+PIPE_ACCESS_INBOUND = 0x00000001
+PIPE_ACCESS_OUTBOUND = 0x00000002
+PIPE_TYPE_BYTE = 0x00000000
+PIPE_READMODE_BYTE = 0x00000000
+PIPE_WAIT = 0x00000000
+PIPE_UNLIMITED_INSTANCES = 255
+
+GENERIC_READ = 0x80000000
+GENERIC_WRITE = 0x40000000
+OPEN_EXISTING = 3
+
+SECURITY_DESCRIPTOR_REVISION = 1
+
+PROCESS_QUERY_INFORMATION = 0x0400
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+ERROR_PIPE_CONNECTED = 535
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
+# Structures
+
+class STARTUPINFOW(ctypes.Structure):
+    _fields_ = [
+        ("cb", wintypes.DWORD),
+        ("lpReserved", wintypes.LPWSTR),
+        ("lpDesktop", wintypes.LPWSTR),
+        ("lpTitle", wintypes.LPWSTR),
+        ("dwX", wintypes.DWORD),
+        ("dwY", wintypes.DWORD),
+        ("dwXSize", wintypes.DWORD),
+        ("dwYSize", wintypes.DWORD),
+        ("dwXCountChars", wintypes.DWORD),
+        ("dwYCountChars", wintypes.DWORD),
+        ("dwFillAttribute", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("wShowWindow", wintypes.WORD),
+        ("cbReserved2", wintypes.WORD),
+        ("lpReserved2", ctypes.c_void_p),
+        ("hStdInput", wintypes.HANDLE),
+        ("hStdOutput", wintypes.HANDLE),
+        ("hStdError", wintypes.HANDLE),
+    ]
+
+
+class PROCESS_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("hProcess", wintypes.HANDLE),
+        ("hThread", wintypes.HANDLE),
+        ("dwProcessId", wintypes.DWORD),
+        ("dwThreadId", wintypes.DWORD),
+    ]
+
+
+class STARTUPINFOEXW(ctypes.Structure):
+    _fields_ = [
+        ("StartupInfo", STARTUPINFOW),
+        ("lpAttributeList", ctypes.c_void_p),
+    ]
+
+
+class COORD(ctypes.Structure):
+    _fields_ = [
+        ("X", wintypes.SHORT),
+        ("Y", wintypes.SHORT),
+    ]
+
+
+class SECURITY_ATTRIBUTES(ctypes.Structure):
+    _fields_ = [
+        ("nLength", wintypes.DWORD),
+        ("lpSecurityDescriptor", ctypes.c_void_p),
+        ("bInheritHandle", wintypes.BOOL),
+    ]
+
+
+class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
+        ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+        ("LimitFlags", wintypes.DWORD),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", wintypes.DWORD),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", wintypes.DWORD),
+        ("SchedulingClass", wintypes.DWORD),
+    ]
+
+
+class IO_COUNTERS(ctypes.Structure):
+    _fields_ = [
+        ("ReadOperationCount", ctypes.c_ulonglong),
+        ("WriteOperationCount", ctypes.c_ulonglong),
+        ("OtherOperationCount", ctypes.c_ulonglong),
+        ("ReadTransferCount", ctypes.c_ulonglong),
+        ("WriteTransferCount", ctypes.c_ulonglong),
+        ("OtherTransferCount", ctypes.c_ulonglong),
+    ]
+
+
+class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+        ("IoInfo", IO_COUNTERS),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+# Function prototypes
+
+advapi32.CreateProcessWithLogonW.argtypes = [
+    wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR,
+    wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPWSTR,
+    wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
+    ctypes.POINTER(STARTUPINFOW),
+    ctypes.POINTER(PROCESS_INFORMATION),
+]
+advapi32.CreateProcessWithLogonW.restype = wintypes.BOOL
+
+advapi32.CreateProcessAsUserW.argtypes = [
+    wintypes.HANDLE, wintypes.LPCWSTR, wintypes.LPWSTR,
+    ctypes.c_void_p, ctypes.c_void_p, wintypes.BOOL,
+    wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
+    ctypes.c_void_p,
+    ctypes.POINTER(PROCESS_INFORMATION),
+]
+advapi32.CreateProcessAsUserW.restype = wintypes.BOOL
+
+kernel32.CreateJobObjectW.argtypes = [
+    ctypes.c_void_p, wintypes.LPCWSTR,
+]
+kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+
+kernel32.OpenJobObjectW.argtypes = [
+    wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR,
+]
+kernel32.OpenJobObjectW.restype = wintypes.HANDLE
+
+kernel32.SetInformationJobObject.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD,
+    ctypes.c_void_p, wintypes.DWORD,
+]
+kernel32.SetInformationJobObject.restype = wintypes.BOOL
+
+kernel32.AssignProcessToJobObject.argtypes = [
+    wintypes.HANDLE, wintypes.HANDLE,
+]
+kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+
+kernel32.IsProcessInJob.argtypes = [
+    wintypes.HANDLE, wintypes.HANDLE,
+    ctypes.POINTER(wintypes.BOOL),
+]
+kernel32.IsProcessInJob.restype = wintypes.BOOL
+
+kernel32.TerminateJobObject.argtypes = [
+    wintypes.HANDLE, wintypes.UINT,
+]
+kernel32.TerminateJobObject.restype = wintypes.BOOL
+
+kernel32.QueryInformationJobObject.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD,
+    ctypes.c_void_p, wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+]
+kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+
+kernel32.CreatePseudoConsole.argtypes = [
+    COORD, wintypes.HANDLE, wintypes.HANDLE,
+    wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+]
+kernel32.CreatePseudoConsole.restype = wintypes.LONG
+
+kernel32.ResizePseudoConsole.argtypes = [
+    ctypes.c_void_p, COORD,
+]
+kernel32.ResizePseudoConsole.restype = wintypes.LONG
+
+kernel32.ClosePseudoConsole.argtypes = [ctypes.c_void_p]
+kernel32.ClosePseudoConsole.restype = None
+
+kernel32.InitializeProcThreadAttributeList.argtypes = [
+    ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+    ctypes.POINTER(ctypes.c_size_t),
+]
+kernel32.InitializeProcThreadAttributeList.restype = wintypes.BOOL
+
+kernel32.UpdateProcThreadAttribute.argtypes = [
+    ctypes.c_void_p, wintypes.DWORD, ctypes.c_size_t,
+    ctypes.c_void_p, ctypes.c_size_t,
+    ctypes.c_void_p, ctypes.c_void_p,
+]
+kernel32.UpdateProcThreadAttribute.restype = wintypes.BOOL
+
+kernel32.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
+kernel32.DeleteProcThreadAttributeList.restype = None
+
+kernel32.CreatePipe.argtypes = [
+    ctypes.POINTER(wintypes.HANDLE),
+    ctypes.POINTER(wintypes.HANDLE),
+    ctypes.c_void_p, wintypes.DWORD,
+]
+kernel32.CreatePipe.restype = wintypes.BOOL
+
+kernel32.CreateNamedPipeW.argtypes = [
+    wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+    wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+    wintypes.DWORD, ctypes.c_void_p,
+]
+kernel32.CreateNamedPipeW.restype = wintypes.HANDLE
+
+kernel32.ConnectNamedPipe.argtypes = [
+    wintypes.HANDLE, ctypes.c_void_p,
+]
+kernel32.ConnectNamedPipe.restype = wintypes.BOOL
+
+kernel32.CreateFileW.argtypes = [
+    wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+    ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+    wintypes.HANDLE,
+]
+kernel32.CreateFileW.restype = wintypes.HANDLE
+
+kernel32.ReadFile.argtypes = [
+    wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+]
+kernel32.ReadFile.restype = wintypes.BOOL
+
+kernel32.WriteFile.argtypes = [
+    wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+]
+kernel32.WriteFile.restype = wintypes.BOOL
+
+kernel32.PeekNamedPipe.argtypes = [
+    wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+    ctypes.POINTER(wintypes.DWORD),
+    ctypes.POINTER(wintypes.DWORD),
+]
+kernel32.PeekNamedPipe.restype = wintypes.BOOL
+
+kernel32.OpenProcess.argtypes = [
+    wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
+]
+kernel32.OpenProcess.restype = wintypes.HANDLE
+
+kernel32.GetCurrentProcessId.argtypes = []
+kernel32.GetCurrentProcessId.restype = wintypes.DWORD
+
+advapi32.InitializeSecurityDescriptor.argtypes = [
+    ctypes.c_void_p, wintypes.DWORD,
+]
+advapi32.InitializeSecurityDescriptor.restype = wintypes.BOOL
+
+advapi32.SetSecurityDescriptorDacl.argtypes = [
+    ctypes.c_void_p, wintypes.BOOL, ctypes.c_void_p, wintypes.BOOL,
+]
+advapi32.SetSecurityDescriptorDacl.restype = wintypes.BOOL
+
+
+# Helper functions
+
+def create_null_dacl_sa() -> tuple:
+    sd = (ctypes.c_byte * 64)()
+    ok = advapi32.InitializeSecurityDescriptor(sd, SECURITY_DESCRIPTOR_REVISION)
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    ok = advapi32.SetSecurityDescriptorDacl(sd, True, None, False)
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    sa = SECURITY_ATTRIBUTES()
+    sa.nLength = ctypes.sizeof(SECURITY_ATTRIBUTES)
+    sa.lpSecurityDescriptor = ctypes.addressof(sd)
+    sa.bInheritHandle = True
+    return sa, sd
+
+
+def create_pipe(inheritable: bool = True) -> tuple[int, int]:
+    read_h = wintypes.HANDLE()
+    write_h = wintypes.HANDLE()
+    if inheritable:
+        sa, sd = create_null_dacl_sa()
+        sa_ptr = ctypes.byref(sa)
+    else:
+        sa_ptr = None
+    ok = kernel32.CreatePipe(
+        ctypes.byref(read_h), ctypes.byref(write_h), sa_ptr, 0
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return read_h.value, write_h.value
+
+
+def create_named_pipe(
+    name: str, open_mode: int, buf_size: int = 4096,
+    sa: SECURITY_ATTRIBUTES | None = None,
+) -> int:
+    handle = kernel32.CreateNamedPipeW(
+        name, open_mode,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+        PIPE_UNLIMITED_INSTANCES, buf_size, buf_size, 0,
+        ctypes.byref(sa) if sa else None,
+    )
+    if handle == INVALID_HANDLE_VALUE:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return handle
+
+
+def connect_named_pipe(handle: int) -> None:
+    ok = kernel32.ConnectNamedPipe(handle, None)
+    if not ok:
+        err = ctypes.get_last_error()
+        if err != ERROR_PIPE_CONNECTED:
+            raise ctypes.WinError(err)
+
+
+def open_file(path: str, access: int, share: int = 0) -> int:
+    handle = kernel32.CreateFileW(
+        path, access, share, None, OPEN_EXISTING, 0, None
+    )
+    if handle == INVALID_HANDLE_VALUE:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return handle
+
+
+def read_file(handle: int, size: int) -> bytes:
+    buf = (ctypes.c_byte * size)()
+    read = wintypes.DWORD()
+    ok = kernel32.ReadFile(handle, buf, size, ctypes.byref(read), None)
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return bytes(buf[:read.value])
+
+
+def write_file(handle: int, data: bytes) -> int:
+    written = wintypes.DWORD()
+    ok = kernel32.WriteFile(
+        handle, data, len(data), ctypes.byref(written), None
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return written.value
+
+
+def peek_pipe(handle: int) -> int:
+    available = wintypes.DWORD()
+    ok = kernel32.PeekNamedPipe(
+        handle, None, 0, None, ctypes.byref(available), None
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return available.value
+
+
+def create_process_with_logon(
+    username: str, domain: str, password: str,
+    command_line: str, creation_flags: int = 0,
+    env: ctypes.Array | None = None, cwd: str | None = None,
+) -> tuple[int, int, int, int]:
+    si = STARTUPINFOW()
+    si.cb = ctypes.sizeof(STARTUPINFOW)
+    pi = PROCESS_INFORMATION()
+    cmd = ctypes.create_unicode_buffer(command_line)
+    ok = advapi32.CreateProcessWithLogonW(
+        username, domain, password,
+        LOGON_WITH_PROFILE, None, cmd,
+        creation_flags, ctypes.addressof(env) if env else None,
+        cwd, ctypes.byref(si), ctypes.byref(pi),
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return pi.hProcess, pi.hThread, pi.dwProcessId, pi.dwThreadId
+
+
+def create_process_as_user(
+    token: int, command_line: str,
+    creation_flags: int = 0,
+    env: ctypes.Array | None = None, cwd: str | None = None,
+    attribute_list: int | None = None,
+    std_handles: tuple[int, int, int] | None = None,
+) -> tuple[int, int, int, int]:
+    pi = PROCESS_INFORMATION()
+    cmd = ctypes.create_unicode_buffer(command_line)
+    inherit_handles = std_handles is not None
+    if attribute_list is not None:
+        si_ex = STARTUPINFOEXW()
+        si_ex.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
+        si_ex.lpAttributeList = attribute_list
+        creation_flags |= EXTENDED_STARTUPINFO_PRESENT
+        if std_handles is not None:
+            si_ex.StartupInfo.dwFlags |= STARTF_USESTDHANDLES
+            si_ex.StartupInfo.hStdInput = std_handles[0]
+            si_ex.StartupInfo.hStdOutput = std_handles[1]
+            si_ex.StartupInfo.hStdError = std_handles[2]
+        si_ptr = ctypes.byref(si_ex)
+    else:
+        si = STARTUPINFOW()
+        si.cb = ctypes.sizeof(STARTUPINFOW)
+        if std_handles is not None:
+            si.dwFlags |= STARTF_USESTDHANDLES
+            si.hStdInput = std_handles[0]
+            si.hStdOutput = std_handles[1]
+            si.hStdError = std_handles[2]
+        si_ptr = ctypes.byref(si)
+    ok = advapi32.CreateProcessAsUserW(
+        token, None, cmd, None, None, inherit_handles,
+        creation_flags, ctypes.addressof(env) if env else None,
+        cwd, si_ptr, ctypes.byref(pi),
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return pi.hProcess, pi.hThread, pi.dwProcessId, pi.dwThreadId
+
+
+def create_job_object(name: str | None = None, sa=None) -> int:
+    handle = kernel32.CreateJobObjectW(
+        ctypes.byref(sa) if sa else None, name
+    )
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return handle
+
+
+def set_job_kill_on_close(job: int) -> None:
+    info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    ok = kernel32.SetInformationJobObject(
+        job, JobObjectExtendedLimitInformation,
+        ctypes.byref(info), ctypes.sizeof(info),
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def assign_process_to_job(job: int, process: int) -> None:
+    ok = kernel32.AssignProcessToJobObject(job, process)
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def is_process_in_job(process: int, job: int | None = None) -> bool:
+    result = wintypes.BOOL()
+    ok = kernel32.IsProcessInJob(process, job, ctypes.byref(result))
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return bool(result.value)
+
+
+def terminate_job_object(job: int, exit_code: int = 1) -> None:
+    ok = kernel32.TerminateJobObject(job, exit_code)
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def open_job_object(name: str, access: int = JOB_OBJECT_TERMINATE) -> int:
+    handle = kernel32.OpenJobObjectW(access, False, name)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return handle
+
+
+def create_pseudo_console(
+    cols: int, rows: int, h_input: int, h_output: int
+) -> int:
+    size = COORD()
+    size.X = cols
+    size.Y = rows
+    hpc = ctypes.c_void_p()
+    hr = kernel32.CreatePseudoConsole(
+        size, h_input, h_output, 0, ctypes.byref(hpc)
+    )
+    if hr < 0:
+        raise OSError(f"CreatePseudoConsole failed: HRESULT 0x{hr & 0xFFFFFFFF:08X}")
+    return hpc.value
+
+
+def close_pseudo_console(hpc: int) -> None:
+    if hpc:
+        kernel32.ClosePseudoConsole(hpc)
+
+
+def resize_pseudo_console(hpc: int, cols: int, rows: int) -> None:
+    size = COORD()
+    size.X = cols
+    size.Y = rows
+    hr = kernel32.ResizePseudoConsole(hpc, size)
+    if hr < 0:
+        raise OSError(f"ResizePseudoConsole failed: HRESULT 0x{hr & 0xFFFFFFFF:08X}")
+
+
+def init_proc_attribute_list(count: int) -> tuple:
+    size = ctypes.c_size_t()
+    kernel32.InitializeProcThreadAttributeList(None, count, 0, ctypes.byref(size))
+    buf = (ctypes.c_byte * size.value)()
+    ok = kernel32.InitializeProcThreadAttributeList(
+        buf, count, 0, ctypes.byref(size)
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return buf, ctypes.addressof(buf)
+
+
+def update_proc_attribute_console(attr_list: int, hpc: int) -> None:
+    hpc_ref = ctypes.c_void_p(hpc)
+    ok = kernel32.UpdateProcThreadAttribute(
+        attr_list, 0,
+        PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+        ctypes.byref(hpc_ref), ctypes.sizeof(hpc_ref),
+        None, None,
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def delete_proc_attribute_list(attr_list: int) -> None:
+    kernel32.DeleteProcThreadAttributeList(attr_list)
+
+
+def make_env_block(env: dict[str, str]) -> ctypes.Array:
+    block = "\0".join(f"{k}={v}" for k, v in sorted(env.items())) + "\0\0"
+    return ctypes.create_unicode_buffer(block)
+
+
+def open_process(pid: int, access: int) -> int:
+    handle = kernel32.OpenProcess(access, False, pid)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return handle
+
+
+def get_current_pid() -> int:
+    return kernel32.GetCurrentProcessId()
