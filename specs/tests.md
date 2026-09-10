@@ -97,6 +97,7 @@ Windows APIs (not pure logic).
 63. List returns all sandboxes with correct states.
 64. Status on a running sandbox includes live PIDs.
 65. [integration] Install reports warnings for shells not found on the system (non-fatal).
+68. [integration] Engine.start returns a handle that provides an interactive shell — send a command via pipe, receive output back.
 
 ## cli
 

@@ -1,5 +1,6 @@
 import json
 import shutil
+import time
 from datetime import datetime
 from pathlib import Path
 from unittest import mock
@@ -157,3 +158,69 @@ def test_install_warns_missing_shells(engine):
 
     assert len(result["warnings"]) > 0
     assert any("shell not found" in w for w in result["warnings"])
+
+
+@pytest.mark.integration
+def test_interactive_shell(tmp_path):
+    """Test 68: Engine.start returns a handle providing an interactive shell."""
+    import sys
+    from sbx import winapi
+    from sbx.elevation import run_elevated
+    from sbx.identity import store_credentials, SANDBOX_USER
+    from sbx.process import stop_sandbox
+
+    python_dir = str(Path(sys.executable).parent)
+    project_dir = str(Path(__file__).parent.parent)
+
+    try:
+        result = run_elevated("setup_test_env", {
+            "grant_paths": [python_dir, project_dir],
+        })
+    except Exception:
+        pytest.skip("cannot set up test environment (UAC denied)")
+
+    store_credentials(SANDBOX_USER, result["password"])
+
+    store = Store(tmp_path / "store.json")
+    engine = Engine(store=store)
+
+    project = (tmp_path / "itest").resolve()
+    project.mkdir()
+    config_dir = project / ".sandbox"
+    config_dir.mkdir()
+    config_file = config_dir / "config.json"
+    config_file.write_text(json.dumps({
+        "mounts": [{"source": str(project), "target": "repo"}],
+        "shell": "cmd",
+        "network": "none",
+    }))
+
+    with mock.patch("sbx.engine.run_elevated", return_value={"created": True}):
+        engine.create(config_file, name="itest")
+
+    handle = engine.start(project)
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if winapi.peek_pipe(handle.pipe_out) > 0:
+                winapi.read_file(handle.pipe_out, winapi.peek_pipe(handle.pipe_out))
+                break
+            time.sleep(0.2)
+
+        winapi.write_file(handle.pipe_in, b"echo INTERACTIVE_OK\r\n")
+
+        output = b""
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            avail = winapi.peek_pipe(handle.pipe_out)
+            if avail > 0:
+                output += winapi.read_file(handle.pipe_out, avail)
+                if b"INTERACTIVE_OK" in output:
+                    break
+            time.sleep(0.2)
+
+        assert b"INTERACTIVE_OK" in output
+    finally:
+        stop_sandbox("itest")
+        winapi.wait_for_process(handle.runner_process)
+        handle.close()
