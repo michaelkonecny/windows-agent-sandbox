@@ -13,10 +13,6 @@ elif len(sys.argv) >= 5 and sys.argv[1] == "_run":
 
     execute_runner(sys.argv[2], sys.argv[3], sys.argv[4])
 else:
-    try:
-        from sbx.cli import main
+    from sbx.cli import main
 
-        main()
-    except ImportError:
-        print("CLI not yet implemented", file=sys.stderr)
-        sys.exit(1)
+    main()

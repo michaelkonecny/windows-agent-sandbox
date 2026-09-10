@@ -111,6 +111,37 @@ def _op_grant_access(**kwargs) -> dict:
     return {"granted": True}
 
 
+@register("create_mounts")
+def _op_create_mounts(**kwargs) -> dict:
+    from sbx.mounts import MountSpec, create as mounts_create
+    specs = [
+        MountSpec(
+            source=Path(s["source"]),
+            target=s["target"],
+            sandbox_sid=s["sandbox_sid"],
+        )
+        for s in kwargs["specs"]
+    ]
+    mounts_create(kwargs["sandbox_name"], specs)
+    return {"created": True}
+
+
+@register("destroy_mounts")
+def _op_destroy_mounts(**kwargs) -> dict:
+    from sbx.mounts import destroy as mounts_destroy
+    mounts_destroy(kwargs["sandbox_name"])
+    return {"destroyed": True}
+
+
+@register("uninstall_cleanup")
+def _op_uninstall_cleanup(**kwargs) -> dict:
+    from sbx.identity import uninstall_user
+    from sbx.network import uninstall_wfp_rules
+    uninstall_wfp_rules()
+    uninstall_user()
+    return {"uninstalled": True}
+
+
 @register("setup_test_env")
 def _op_setup_test_env(**kwargs) -> dict:
     import secrets
