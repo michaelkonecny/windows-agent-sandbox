@@ -13,3 +13,7 @@ sbx = "sbx.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "elevation: needs admin privileges",
+    "integration: needs Windows APIs or system changes",
+]
