@@ -12,6 +12,54 @@ from sbx.errors import SandboxError
 log = logging.getLogger(__name__)
 
 
+def _interactive_session(handle) -> None:
+    """Relay stdin/stdout between the terminal and the sandboxed shell."""
+    import msvcrt
+    import threading
+
+    from sbx import winapi
+
+    stop = threading.Event()
+
+    def _read_output():
+        while not stop.is_set():
+            try:
+                avail = winapi.peek_pipe(handle.pipe_out)
+            except OSError:
+                break
+            if avail > 0:
+                try:
+                    data = winapi.read_file(handle.pipe_out, min(avail, 4096))
+                    sys.stdout.buffer.write(data)
+                    sys.stdout.buffer.flush()
+                except OSError:
+                    break
+            else:
+                stop.wait(0.02)
+
+    output_thread = threading.Thread(target=_read_output, daemon=True)
+    output_thread.start()
+
+    try:
+        while not stop.is_set():
+            if msvcrt.kbhit():
+                ch = msvcrt.getwch()
+                if ch == "\r":
+                    ch = "\r\n"
+                try:
+                    winapi.write_file(handle.pipe_in, ch.encode("utf-8"))
+                except OSError:
+                    break
+            else:
+                stop.wait(0.02)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop.set()
+        output_thread.join(timeout=2)
+        handle.close()
+
+
 def _setup_logging(verbose: bool = False, debug: bool = False) -> None:
     level = logging.DEBUG if debug else (logging.INFO if verbose else logging.WARNING)
     logging.basicConfig(
@@ -65,8 +113,8 @@ def create(ctx: click.Context, config_path: str, name: str | None) -> None:
 @click.argument("project_path", default=".")
 @click.pass_context
 def start(ctx: click.Context, project_path: str) -> None:
-    _engine(ctx).start(project_path)
-    click.echo("sandbox started.")
+    handle = _engine(ctx).start(project_path)
+    _interactive_session(handle)
 
 
 @main.command()

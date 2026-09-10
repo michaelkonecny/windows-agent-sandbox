@@ -35,9 +35,11 @@ def test_init_success(runner, tmp_path):
     assert "config created" in result.output
 
 
-def test_list_empty(runner):
+def test_list_empty(runner, tmp_path):
     """Test 66 (list): list with no sandboxes returns exit 0."""
-    result = runner.invoke(main, ["list"])
+    store_path = str(tmp_path / "empty-store.json")
+    with mock.patch("sbx.engine.Store", lambda: __import__("sbx.store", fromlist=["Store"]).Store(Path(store_path))):
+        result = runner.invoke(main, ["list"])
     assert result.exit_code == 0
     assert "no sandboxes" in result.output
 
