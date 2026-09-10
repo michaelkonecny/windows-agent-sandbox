@@ -28,7 +28,7 @@ Two layers:
 ## Sandbox lifecycle
 
 1. Install (one-time) — engine creates the shared sandbox user account, sets up system ACLs, configures WFP rules. Requires elevation.
-2. Define — user writes a sandbox definition in the JSON config file.
+2. Init — `sbx init` scaffolds a `.sandbox/config.json` with defaults. User edits it.
 3. Create — engine generates a per-sandbox synthetic SID, sets up bind links and ACLs on mount targets, stores sandbox metadata. Requires elevation.
 4. Start — engine re-invokes itself as the sandbox user (via `CreateProcessWithLogonW`), creates a restricted token from that user's token, and launches an interactive shell under it. The user launches agents or other tools from within this shell. Does not require elevation.
 5. Stop — engine terminates sandbox processes.
@@ -107,6 +107,7 @@ See Network mechanism for implementation details.
 
 ```
 sbx install                 # one-time setup (elevated)
+sbx init                    # scaffolds .sandbox/config.json in current directory
 sbx create [--name alias]   # sets up sandbox from .sandbox/config.json (elevated)
 sbx start [name]            # opens interactive shell inside sandbox
 sbx stop [name]             # terminates sandbox processes
@@ -162,22 +163,13 @@ A single shared local user account (`sbx-user`) hosts all sandboxes. Individual 
 
 #### Restricted tokens and synthetic SIDs
 
-Each sandbox gets two synthetic SIDs in its restricted token:
+Each sandbox gets a per-sandbox synthetic SID — unique to that sandbox, ACL'd with read+write on the sandbox's mount targets. Isolates sandbox A from sandbox B's files.
 
-- Per-sandbox SID — unique to this sandbox. ACL'd with read+write on the sandbox's mount targets. Isolates sandbox A from sandbox B's files.
-- Shared system SID — common across all sandboxes. ACL'd with read-only on system paths the agent needs to function.
+The restricted token's `RestrictedSids` list contains `[per_sandbox_sid, BUILTIN\Users]`. Because the token is fully restricted (not WRITE_RESTRICTED), both reads and writes must pass the restricted SID check. The sandbox process can only access:
+- Its own mounts — via the per-sandbox SID (ACL'd on mount backing paths)
+- System paths — via `BUILTIN\Users` (system paths like `C:\Windows`, `C:\Program Files`, Python/Node/Git directories already grant the Users group read access in their DACLs)
 
-Because the token is fully restricted (not WRITE_RESTRICTED), both reads and writes must pass the restricted SID check. The sandbox process can only access:
-- Its own mounts (via the per-sandbox SID)
-- System paths (via the shared system SID, read-only)
-
-#### System paths granted via shared SID
-
-Read-only access for all sandboxes:
-- `C:\Windows`
-- `C:\Program Files` (or specific subdirectories for required tools)
-- Python, Node, Git install directories
-- Temp directories (`C:\Windows\Temp`, sandbox user's temp)
+No shared synthetic SID or extra system path ACLs are needed — `BUILTIN\Users` in RestrictedSids is sufficient.
 
 #### Mount setup
 
@@ -255,7 +247,6 @@ Discoveries that affect the engine implementation:
 - TUI detailed design and interaction spec.
 - Proxy implementation choice.
 - Whether the engine should support "hot" config changes (modify mounts/network on a running sandbox) or require stop/recreate.
-- Init command that scaffolds a config file.
 - Log capture and forwarding from sandbox processes.
 
 ## Non-goals

@@ -59,9 +59,9 @@ Role: thin ctypes wrapper over every Win32 API the engine needs.
 
 Role: load, validate, and resolve a project's `.sandbox/config.json`.
 
-- Holds: JSON schema validation, path resolution (`.` → project root, `~` → host home), mount source existence checks, mount target uniqueness validation, shell executable lookup, network preset resolution.
-- Notes: returns a frozen dataclass. All paths are resolved to absolute paths at parse time. Duplicate mount targets are rejected at parse time. Invalid config raises with a clear message naming the offending key.
-- Depends on: nothing (reads files, pure logic).
+- Holds: JSON schema validation, path resolution (`.` → project root, `~` → host home), mount source existence checks, mount target uniqueness validation, shell executable lookup, network preset resolution, default config scaffolding.
+- Notes: returns a frozen dataclass. All paths are resolved to absolute paths at parse time. Duplicate mount targets are rejected at parse time. Invalid config raises with a clear message naming the offending key. `scaffold_config` writes a `.sandbox/config.json` with commented defaults; refuses if the file already exists.
+- Depends on: nothing (reads/writes files, pure logic).
 
 ### store
 
@@ -134,7 +134,7 @@ Role: enforce per-sandbox network policy via TLS SNI inspection.
 
 Role: orchestration facade — the single API that CLI and (future) TUI call.
 
-- Holds: lifecycle commands (install, create, start, stop, destroy, uninstall, list, status), sequencing of sub-operations, error handling and rollback on partial failure.
+- Holds: lifecycle commands (install, init, create, start, stop, destroy, uninstall, list, status), sequencing of sub-operations, error handling and rollback on partial failure.
 - Notes: stateless between calls — all state lives in the store. Each command is a sequence of calls to core modules. Engine decides which operations need elevation and routes them through the elevation module.
 - Depends on: config, store, identity, mounts, network, process, elevation.
 
@@ -186,7 +186,7 @@ Universal leaves: winapi (all Win32 calls), config (pure parsing), store (pure p
 
 Internal edges:
 - cli → engine : lifecycle commands
-- engine → config : parse config for create/start
+- engine → config : parse config for create/start; scaffold config for init
 - engine → store : read/write sandbox metadata
 - engine → identity : install/uninstall user; create SIDs
 - engine → mounts : create/destroy bind links + ACLs
@@ -212,6 +212,8 @@ External edges:
 class Engine:
     def install() -> InstallResult
     def uninstall() -> None
+    def init(project_path: Path) -> Path
+        """Scaffold .sandbox/config.json. Returns the created path."""
     def create(config_path: Path, name: str | None = None) -> CreateResult
     def destroy(sandbox: str) -> None          # name or project path
     def start(sandbox: str) -> StartHandle     # name or project path
@@ -239,6 +241,10 @@ class SandboxConfig:
     network: NetworkPreset     # enum: none, claude_api_only, all
 
 def load_config(config_path: Path) -> SandboxConfig
+
+def scaffold_config(project_path: Path) -> Path
+    """Write .sandbox/config.json with defaults. Raises ConfigError if it already exists.
+    Returns the created file path."""
 ```
 
 ### engine → store
