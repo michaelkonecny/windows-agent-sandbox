@@ -21,9 +21,11 @@ Deviations from `plan.md` and follow-ups noticed during implementation.
   `BUILTIN\Users` to prevent `STATUS_DLL_INIT_FAILED` during process
   initialization.
 
-- WFP rules via `netsh` instead of ctypes WFP APIs — plan specified
-  `FwpmEngineOpen0`, `FwpmFilterAdd0`, etc. Used `netsh advfirewall firewall`
-  instead, which is backed by WFP internally. Simpler, fewer ctypes bindings,
+- WFP rules via PowerShell instead of ctypes WFP APIs — plan specified
+  `FwpmEngineOpen0`, `FwpmFilterAdd0`, etc. First attempt used `netsh
+  advfirewall firewall`, but netsh doesn't support per-user rule scoping.
+  Switched to PowerShell `New-NetFirewallRule` with `-LocalUser` SDDL
+  parameter for proper per-user scoping. Simpler than ctypes WFP bindings,
   same security effect.
 
 - `GetExtendedTcpTable` byte order — the plan didn't mention this, but
