@@ -30,7 +30,7 @@ Two layers:
 1. Install (one-time) — engine creates the shared sandbox user account, sets up system ACLs, configures WFP rules. Requires elevation.
 2. Define — user writes a sandbox definition in the JSON config file.
 3. Create — engine generates a per-sandbox synthetic SID, sets up bind links and ACLs on mount targets, stores sandbox metadata. Requires elevation.
-4. Start — engine creates a restricted token, launches an interactive shell (cmd, PowerShell, or Git Bash) under that token with the configured environment. The user launches agents or other tools from within this shell.
+4. Start — engine re-invokes itself as the sandbox user (via `CreateProcessWithLogonW`), creates a restricted token from that user's token, and launches an interactive shell under it. The user launches agents or other tools from within this shell. Does not require elevation.
 5. Stop — engine terminates sandbox processes.
 6. Destroy — engine removes bind links, ACLs, and sandbox metadata. Requires elevation.
 7. Uninstall — engine removes shared user account, shared SID ACLs, WFP rules. Requires elevation.
@@ -208,6 +208,17 @@ Single user, WFP backstop, proxy-based policy. Fail-safe by design — three lay
 The proxy runs on a single port. All sandboxes share the same `HTTPS_PROXY` address. The proxy differentiates by looking up the source PID of each incoming connection (via `GetExtendedTcpTable`), mapping it to a sandbox (the engine registers which PIDs belong to which sandbox), and applying that sandbox's network policy.
 
 Multiple sandboxes with different network presets run concurrently — the proxy routes per-PID, WFP provides a uniform backstop.
+
+### Process launch mechanism
+
+Command runner pattern — avoids elevation for start/stop.
+
+1. Engine CLI (unprivileged) calls `CreateProcessWithLogonW` to re-invoke itself as `sbx-user` with an internal `_run` subcommand, passing the sandbox name.
+2. The re-invoked instance (the "runner") is now running as `sbx-user` with a full token. It opens its own process token, calls `CreateRestrictedToken` with `[per_sandbox_sid, BUILTIN\Users]` in `RestrictedSids`, and `DISABLE_MAX_PRIVILEGE`.
+3. The runner calls `CreateProcessAsUser` with the restricted token to spawn the configured shell. This works without special privileges because the restricted token is derived from the runner's own logon session.
+4. The runner stays alive to relay I/O between the engine CLI and the sandboxed shell, and exits when the shell exits.
+
+Sandbox user credentials are stored DPAPI-encrypted during install, read by the engine at start time.
 
 ### Assumptions validated
 
