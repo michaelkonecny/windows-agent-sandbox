@@ -22,28 +22,31 @@ def install_wfp_rules(user_sid: str, proxy_port: int) -> None:
     """Install WFP firewall rules scoped to sbx-user.
 
     Blocks all outbound traffic for the user except loopback to proxy_port.
-    Uses Windows Firewall via netsh (backed by WFP internally).
+    Uses PowerShell New-NetFirewallRule with -LocalUser for per-user scoping.
     Requires elevation.
     """
     _remove_rules_quiet()
 
-    _run_netsh([
-        "advfirewall", "firewall", "add", "rule",
-        f"name={WFP_BLOCK_RULE}",
-        "dir=out", "action=block",
-        "protocol=any",
-        f"localip=any",
-        f"remoteip=any",
-    ], user_sid)
+    sddl = f"D:(A;;CC;;;{user_sid})"
 
-    _run_netsh([
-        "advfirewall", "firewall", "add", "rule",
-        f"name={WFP_ALLOW_RULE}",
-        "dir=out", "action=allow",
-        "protocol=tcp",
-        f"remoteip=127.0.0.1",
-        f"remoteport={proxy_port}",
-    ], user_sid)
+    _run_ps_firewall(
+        "New-NetFirewallRule"
+        f" -DisplayName '{WFP_BLOCK_RULE}'"
+        f" -Direction Outbound -Action Block"
+        f" -LocalUser '{sddl}'"
+        f" -Enabled True"
+    )
+
+    _run_ps_firewall(
+        "New-NetFirewallRule"
+        f" -DisplayName '{WFP_ALLOW_RULE}'"
+        f" -Direction Outbound -Action Allow"
+        f" -Protocol TCP"
+        f" -RemoteAddress 127.0.0.1"
+        f" -RemotePort {proxy_port}"
+        f" -LocalUser '{sddl}'"
+        f" -Enabled True"
+    )
 
     log.info("WFP rules installed for SID %s, proxy port %d", user_sid, proxy_port)
 
@@ -54,26 +57,22 @@ def uninstall_wfp_rules() -> None:
     log.info("WFP rules removed")
 
 
-def _run_netsh(args: list[str], user_sid: str | None = None) -> None:
-    cmd = ["netsh"] + args
-    if user_sid:
-        cmd.extend([f"/localuser={user_sid}"])
+def _run_ps_firewall(ps_cmd: str) -> None:
+    cmd = ["powershell", "-NoProfile", "-Command", ps_cmd]
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
-        raise NetworkError(f"netsh failed: {e.stderr.strip()}")
+        raise NetworkError(f"firewall command failed: {e.stderr.strip()}")
 
 
 def _remove_rules_quiet() -> None:
     for name in (WFP_BLOCK_RULE, WFP_ALLOW_RULE):
-        try:
-            subprocess.run(
-                ["netsh", "advfirewall", "firewall", "delete", "rule",
-                 f"name={name}"],
-                capture_output=True, text=True,
-            )
-        except subprocess.CalledProcessError:
-            pass
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"Remove-NetFirewallRule -DisplayName '{name}'"
+             f" -ErrorAction SilentlyContinue"],
+            capture_output=True, text=True,
+        )
 
 
 def _is_process_alive(pid: int) -> bool:

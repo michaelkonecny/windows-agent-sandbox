@@ -20,28 +20,27 @@ from sbx.network import (
 from sbx.proxy import ProxyControl, ProxyServer, read_pid_file
 
 
+def _rule_exists(display_name: str) -> bool:
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         f"Get-NetFirewallRule -DisplayName '{display_name}'"
+         f" -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count"],
+        capture_output=True, text=True,
+    )
+    return result.stdout.strip() not in ("", "0")
+
+
 # ── WFP rule tests (require elevation) ────────────────────
 
 
 @pytest.mark.elevation
 def test_wfp_install():
-    """Test 52: WFP rules install successfully via netsh."""
+    """Test 52: WFP rules install successfully."""
     sid = "S-1-5-21-0-0-0-0"
     install_wfp_rules(sid, 8443)
 
-    result = subprocess.run(
-        ["netsh", "advfirewall", "firewall", "show", "rule",
-         f"name={WFP_BLOCK_RULE}"],
-        capture_output=True, text=True,
-    )
-    assert WFP_BLOCK_RULE in result.stdout
-
-    result = subprocess.run(
-        ["netsh", "advfirewall", "firewall", "show", "rule",
-         f"name={WFP_ALLOW_RULE}"],
-        capture_output=True, text=True,
-    )
-    assert WFP_ALLOW_RULE in result.stdout
+    assert _rule_exists(WFP_BLOCK_RULE)
+    assert _rule_exists(WFP_ALLOW_RULE)
 
     uninstall_wfp_rules()
 
@@ -53,13 +52,8 @@ def test_wfp_uninstall():
     install_wfp_rules(sid, 8443)
     uninstall_wfp_rules()
 
-    for name in (WFP_BLOCK_RULE, WFP_ALLOW_RULE):
-        result = subprocess.run(
-            ["netsh", "advfirewall", "firewall", "show", "rule",
-             f"name={name}"],
-            capture_output=True, text=True,
-        )
-        assert name not in result.stdout or "No rules match" in result.stdout
+    assert not _rule_exists(WFP_BLOCK_RULE)
+    assert not _rule_exists(WFP_ALLOW_RULE)
 
 
 @pytest.mark.elevation
@@ -69,12 +63,7 @@ def test_wfp_reinstall_idempotent():
     install_wfp_rules(sid, 8443)
     install_wfp_rules(sid, 9443)
 
-    result = subprocess.run(
-        ["netsh", "advfirewall", "firewall", "show", "rule",
-         f"name={WFP_ALLOW_RULE}"],
-        capture_output=True, text=True,
-    )
-    assert WFP_ALLOW_RULE in result.stdout
+    assert _rule_exists(WFP_ALLOW_RULE)
 
     uninstall_wfp_rules()
 

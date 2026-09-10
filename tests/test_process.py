@@ -17,7 +17,7 @@ from sbx.process import (
 )
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def credentials_path():
     import sys
     import tempfile
@@ -25,13 +25,6 @@ def credentials_path():
     creds_dir = Path(tempfile.gettempdir()) / "sbx-test"
     creds_dir.mkdir(exist_ok=True)
     creds = creds_dir / "credentials.json"
-
-    if creds.exists():
-        try:
-            get_credentials(creds)
-            return creds
-        except Exception:
-            pass
 
     python_dir = str(Path(sys.executable).parent)
     project_dir = str(Path(__file__).parent.parent)
