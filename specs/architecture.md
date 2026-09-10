@@ -22,13 +22,15 @@ Terminology:
 
 ## Runtimes
 
-Two processes at steady state, plus transient helpers:
+Five process roles, four alive during a running sandbox:
 
-- Engine CLI — Python, runs as the host user (unprivileged). Entry point for all commands. Single-threaded except for I/O relay during `start`.
-- Runner — Python (the engine re-invoked with `_run`), runs as `sbx-user`. Transient: lives only while the sandboxed shell is alive. Creates the restricted token, spawns the shell, relays I/O, exits when the shell exits.
+- Engine CLI — Python, runs as the host user (unprivileged). Entry point for all commands. During `start`, stays alive to relay I/O between the terminal and the runner; exits when the shell exits.
+- Runner — Python (the engine re-invoked with `_run`), runs as `sbx-user`. Lives while the sandboxed shell is alive. Creates the restricted token, spawns the shell inside a Job Object, relays I/O, exits when the shell exits.
+- Proxy — Python async process on loopback, runs as the host user. Long-lived: started on first sandbox start if not already running, self-terminates after 60s idle. Single port, multiplexes per sandbox via Job Object membership.
 - Elevation helper — Python (the engine re-invoked with an internal elevation subcommand), runs elevated via UAC. Transient: performs one privileged operation and exits. Communicates result back to the unprivileged engine via a temp file.
-- Proxy — Python async process on loopback, runs as the host user. Long-lived: started on first sandbox start if not already running, stopped on last sandbox stop or explicitly. Single port, multiplexes per PID.
-- Sandboxed shell — the user's configured shell (bash, cmd, etc.), runs under the restricted token. The engine doesn't own this process's internals — it just launches and monitors it.
+- Sandboxed shell — the user's configured shell (bash, cmd, etc.), runs under the restricted token inside the runner's Job Object. All child processes inherit job membership. The engine doesn't own this process's internals — it just launches and monitors it.
+
+During a running sandbox: Engine CLI + Runner + Proxy + Shell (and its children) = 4+ processes. Between sessions: 0-1 (proxy during idle timeout).
 
 Constraint forcing this topology: `CreateProcessAsUser` with a derived restricted token works without elevation only when called from the same logon session. That requires the runner to already be running as `sbx-user`.
 
@@ -49,7 +51,7 @@ Entry points:
 
 Role: thin ctypes wrapper over every Win32 API the engine needs.
 
-- Holds: DLL bindings, struct definitions, constants, low-level helper functions (SID allocation, handle management). Covers: bind filter, user management, SIDs, ACLs, restricted tokens, process creation, WFP, ConPTY (`CreatePseudoConsole`/`ResizePseudoConsole`/`ClosePseudoConsole`), DPAPI.
+- Holds: DLL bindings, struct definitions, constants, low-level helper functions (SID allocation, handle management). Covers: bind filter, user management, SIDs, ACLs, restricted tokens, process creation, Job Objects (`CreateJobObject`/`AssignProcessToJobObject`/`IsProcessInJob`/`TerminateJobObject`), WFP, ConPTY (`CreatePseudoConsole`/`ResizePseudoConsole`/`ClosePseudoConsole`), DPAPI, TCP table (`GetExtendedTcpTable`).
 - Notes: evolved from `poc/winapi.py`. Pure functions and stateless calls — no sandbox concepts leak in. Adding a new Win32 call means adding it here, nowhere else.
 - Depends on: nothing (leaf module).
 
@@ -57,8 +59,8 @@ Role: thin ctypes wrapper over every Win32 API the engine needs.
 
 Role: load, validate, and resolve a project's `.sandbox/config.json`.
 
-- Holds: JSON schema validation, path resolution (`.` → project root, `~` → host home), mount source existence checks, shell executable lookup, network preset resolution.
-- Notes: returns a frozen dataclass. All paths are resolved to absolute paths at parse time. Invalid config raises with a clear message naming the offending key.
+- Holds: JSON schema validation, path resolution (`.` → project root, `~` → host home), mount source existence checks, mount target uniqueness validation, shell executable lookup, network preset resolution.
+- Notes: returns a frozen dataclass. All paths are resolved to absolute paths at parse time. Duplicate mount targets are rejected at parse time. Invalid config raises with a clear message naming the offending key.
 - Depends on: nothing (reads files, pure logic).
 
 ### store
@@ -66,7 +68,7 @@ Role: load, validate, and resolve a project's `.sandbox/config.json`.
 Role: persist and query sandbox metadata across all projects.
 
 - Holds: sandbox records (name, state, synthetic SID string, config path, PIDs, creation time), CRUD operations, state transitions.
-- Notes: JSON file in `%LOCALAPPDATA%\sbx\sandboxes.json`. File-locked on write to handle concurrent CLI invocations. Each record is keyed by project path (one sandbox per project). Name is a display alias for easier lookup, defaults to the project directory name.
+- Notes: JSON file in `%LOCALAPPDATA%\sbx\sandboxes.json`. File-locked on write to handle concurrent CLI invocations. Each record is keyed by project path (one sandbox per project). Name is a display alias for easier lookup, defaults to the project directory name. Names must be unique across all sandboxes — `add()` rejects a duplicate name and the user must supply `--name` with a different alias. Uniqueness matters because the name determines the bind link directory (`C:\Users\sbx-user\<name>\`).
 - Depends on: nothing (reads/writes a JSON file).
 
 ### identity
@@ -105,9 +107,10 @@ Role: manage WFP rules and the proxy lifecycle.
 
 Role: launch and manage sandboxed shell processes via the command runner pattern, with full interactive terminal support via ConPTY.
 
-- Holds: runner launch (`CreateProcessWithLogonW` to re-invoke engine as `sbx-user`), ConPTY pseudo-console creation and management, I/O relay between the CLI terminal and the runner's PTY, PID tracking, process termination.
-- Notes: the runner creates a Windows pseudo-console (`CreatePseudoConsole`) and attaches the sandboxed shell to it. This gives the shell proper terminal emulation — ANSI escapes, line editing, tab completion, Ctrl+C handling, window resize. The engine CLI side relays between its own console and the PTY's I/O pipes. On stop, the engine terminates the runner process (which kills the shell child with it).
-- Depends on: winapi (process APIs, ConPTY APIs), tokens (called by the runner side), identity (reads credentials for `CreateProcessWithLogonW`), store (registers/deregisters PIDs).
+- Holds: runner launch (`CreateProcessWithLogonW` to re-invoke engine as `sbx-user`), Job Object creation, ConPTY pseudo-console creation and management, I/O relay between the CLI terminal and the runner's PTY, PID tracking, process termination.
+- Notes: the runner creates a Job Object, a Windows pseudo-console (`CreatePseudoConsole`), and attaches the sandboxed shell to both. The Job Object ensures all child processes (anything the user launches from the shell) inherit membership — this is how the proxy identifies which sandbox a connecting process belongs to. ConPTY gives proper terminal emulation — ANSI escapes, line editing, tab completion, Ctrl+C handling, window resize. The engine CLI side relays between its own console and the PTY's I/O pipes. On stop, the engine terminates the Job Object (which kills the shell and all its children).
+- Trust boundary: this module's code runs in two contexts — engine CLI side (host user, unprivileged) handles runner launch and I/O relay; runner side (`sbx-user`) handles token creation, Job Object setup, and shell spawn. Same pattern as the elevation module.
+- Depends on: winapi (process APIs, ConPTY APIs, Job Object APIs), tokens (called by the runner side), identity (reads credentials for `CreateProcessWithLogonW`), store (registers/deregisters PIDs).
 
 ### elevation
 
@@ -121,10 +124,11 @@ Role: run privileged operations via a UAC-elevated subprocess.
 
 Role: enforce per-sandbox network policy via TLS SNI inspection.
 
-- Holds: async TCP server on loopback, CONNECT tunnel handling, TLS ClientHello parsing for SNI extraction, domain allowlist matching, PID→sandbox lookup via `GetExtendedTcpTable`, policy table (PID → allowed domains | "all" | "none").
-- Notes: runs as a separate long-lived process. Default policy is deny-all — a connection from an unknown PID or a PID with no registered policy is rejected. The engine registers PID→policy mappings at sandbox start and deregisters at stop. Communication between engine and proxy for policy updates is via a local socket or named pipe (detail TBD in proxy implementation spec).
-- Lifecycle: PID file + idle timeout. Proxy writes `%LOCALAPPDATA%\sbx\proxy.pid` (PID + port). On `sbx start`, engine checks if proxy is alive (PID file + process existence), starts it if not, registers sandbox PID. On `sbx stop`, deregisters PID. Proxy self-terminates after 60s with no registered sandboxes. Engine crash → proxy idles out. Proxy crash → WFP blocks everything (fail-safe), next start detects stale PID file and starts fresh.
-- Depends on: winapi (`GetExtendedTcpTable`).
+- Holds: async TCP server on loopback, CONNECT tunnel handling, TLS ClientHello parsing for SNI extraction, domain allowlist matching, sandbox identification via Job Object membership, policy table (Job Object → allowed domains | "all" | "none").
+- Notes: runs as a separate long-lived process. Default policy is deny-all — a connection from an unknown process or one not in any registered Job Object is rejected. Communication between engine and proxy for policy updates is via a local socket or named pipe (detail TBD in proxy implementation spec).
+- PID→sandbox resolution: the proxy receives a connection, looks up the source PID via `GetExtendedTcpTable`, then checks which registered Job Object that PID belongs to (via `IsProcessInJob`). This handles the full process tree — the shell, its children (e.g. `claude`), and their children all inherit Job Object membership from the runner.
+- Lifecycle: PID file + idle timeout. Proxy writes `%LOCALAPPDATA%\sbx\proxy.pid` (PID + port). On `sbx start`, engine checks if proxy is alive (PID file + process existence), starts it if not, registers the sandbox's Job Object handle. On `sbx stop`, deregisters. Proxy self-terminates after 60s with no registered sandboxes. Engine crash → proxy idles out. Proxy crash → WFP blocks everything (fail-safe), next start detects stale PID file and starts fresh.
+- Depends on: winapi (`GetExtendedTcpTable`, `IsProcessInJob`).
 
 ### engine
 
@@ -145,37 +149,33 @@ Role: command-line interface — parses args and calls the engine.
 ## Connections
 
 ```
-                        ┌───────────┐
-                        │    cli    │
-                        └─────┬─────┘
-                              │
-                        ┌─────▼─────┐
-               ┌────────┤  engine   ├────────┐
-               │        └──┬──┬──┬──┘        │
-               │           │  │  │           │
-        ┌──────▼──┐  ┌─────▼┐ │ ┌▼───────┐ ┌▼─────────┐
-        │ identity│  │mounts│ │ │ network │ │ elevation │
-        └────┬────┘  └──┬───┘ │ └──┬──────┘ └─────┬────┘
-             │          │     │    │               │
-             │          │     │    │    ┌───────┐  │
-             │          │     │    └────► proxy  │  │
-             │          │     │         └───┬───┘  │
-             │          │     │             │      │
-             │     ┌────▼─────▼──┐          │      │
-             │     │   process   │          │      │
-             │     └──┬──────┬───┘          │      │
-             │        │      │              │      │
-             │     ┌──▼───┐  │              │      │
-             │     │tokens│  │              │      │
-             │     └──┬───┘  │              │      │
-             │        │      │              │      │
-     ┌───────▼────────▼──────▼──────────────▼──────▼───┐
+                         ┌───────────┐
+                         │    cli    │
+                         └─────┬─────┘
+                               │
+  ┌────────┐  ┌───────┐  ┌────▼────┐
+  │ config ◄──┤ store ◄──┤ engine  ├──────────────────┐
+  └────────┘  └───▲───┘  └┬──┬──┬──┘                  │
+                  │        │  │  │                     │
+                  │ ┌──────▼┐ │ ┌▼───────┐ ┌──────────▼┐
+                  │ │ident- │ │ │ network │ │ elevation │
+                  │ │ ity   │ │ └──┬──────┘ └───────────┘
+                  │ └───┬───┘ │    │
+                  │     │     │    │    ┌───────┐
+                  │     │     │    └────► proxy  │
+                  │     │     │         └───┬───┘
+                  │     │     │             │
+                  │ ┌───▼─────▼──┐          │
+                  └─┤  process   │          │
+                    └──┬──────┬──┘          │
+                       │      │             │
+                    ┌──▼───┐  │             │
+                    │tokens│  │             │
+                    └──┬───┘  │             │
+                       │      │             │
+     ┌─────────────────▼──────▼─────────────▼──────────┐
      │                     winapi                       │
      └──────────────────────────────────────────────────┘
-
-     ┌────────┐  ┌───────┐
-     │ config │  │ store │    (leaves — no winapi dependency)
-     └────────┘  └───────┘
 ```
 
 Hub: engine — every user-facing operation flows through it.
@@ -195,8 +195,8 @@ Internal edges:
 - engine → elevation : delegate privileged operations
 - process → tokens : runner creates restricted token
 - process → identity : read credentials for `CreateProcessWithLogonW`
-- process → store : register/deregister PIDs
-- network → proxy : start/stop proxy, register PID→policy
+- process → store : register/deregister sandbox PIDs and Job Object handles
+- network → proxy : start/stop proxy, register Job Object→policy
 - identity → winapi, mounts → winapi, tokens → winapi, network → winapi, process → winapi, elevation → winapi, proxy → winapi
 
 External edges:
@@ -227,10 +227,14 @@ class Engine:
 ### engine → config
 
 ```python
+class Mount:
+    source: Path               # absolute, resolved at parse time
+    target: str                # relative path under sandbox workspace
+
 class SandboxConfig:
-    """Frozen. All paths absolute. Validated at construction."""
-    name: str
-    mounts: list[Mount]        # source (abs), target (relative)
+    """Frozen. All paths absolute. Validated at construction.
+    Name is not part of the config — it's assigned at create time."""
+    mounts: list[Mount]        # source (abs), target (relative); targets must be unique
     shell: ShellKind           # enum: git_bash, cmd, powershell, pwsh
     network: NetworkPreset     # enum: none, claude_api_only, all
 
@@ -247,6 +251,7 @@ class SandboxRecord:
     synthetic_sid: str         # S-1-... string form
     config_path: Path          # usually <project>/.sandbox/config.json
     pids: list[int]            # runner + shell PIDs when running
+    job_handle: int | None     # Job Object handle when running
     created_at: datetime
 
 class Store:
@@ -256,6 +261,63 @@ class Store:
     def add(record: SandboxRecord) -> None
     def update(project_path: Path, **fields) -> None
     def remove(project_path: Path) -> None
+```
+
+### engine → identity
+
+```python
+class Identity:
+    def install_user() -> str
+        """Create sbx-user, generate and store DPAPI-encrypted credentials.
+        Return the username. No-op if user already exists."""
+
+    def uninstall_user() -> None
+        """Delete sbx-user and remove stored credentials."""
+
+    def generate_sid() -> str
+        """Create a random synthetic SID. Returns S-1-... string."""
+
+    def get_credentials() -> tuple[str, str]
+        """Return (username, password) for sbx-user, decrypted from DPAPI store."""
+```
+
+### engine → mounts
+
+```python
+class MountSpec:
+    source: Path               # absolute backing path
+    target: str                # relative path under sandbox workspace
+    sandbox_sid: str           # S-1-... SID to grant access
+
+class Mounts:
+    def create(sandbox_name: str, specs: list[MountSpec]) -> None
+        """Create bind links and set ACLs. Requires elevation."""
+
+    def destroy(sandbox_name: str) -> None
+        """Remove bind links and clean up ACLs. Requires elevation."""
+
+    def verify(sandbox_name: str) -> list[str]
+        """Check bind links are intact. Returns list of issues (empty = OK)."""
+```
+
+### engine → network
+
+```python
+class Network:
+    def install_wfp_rules() -> None
+        """Install static WFP deny rules scoped to sbx-user. Requires elevation."""
+
+    def uninstall_wfp_rules() -> None
+        """Remove WFP rules. Requires elevation."""
+
+    def ensure_proxy_running() -> None
+        """Start the proxy if not already alive."""
+
+    def register_sandbox(job_handle: int, policy: NetworkPolicy) -> None
+        """Register a sandbox's Job Object and its network policy with the proxy."""
+
+    def deregister_sandbox(job_handle: int) -> None
+        """Deregister a sandbox from the proxy."""
 ```
 
 ### engine → elevation
@@ -283,8 +345,8 @@ Called inside the runner (running as `sbx-user`). Opens the runner's own process
 class ProxyControl:
     def start() -> None
     def stop() -> None
-    def register(pid: int, policy: NetworkPolicy) -> None
-    def deregister(pid: int) -> None
+    def register(job_handle: int, policy: NetworkPolicy) -> None
+    def deregister(job_handle: int) -> None
 
 class NetworkPolicy:
     preset: NetworkPreset

@@ -59,6 +59,7 @@ Mount semantics:
 - `source` — absolute path on the host (or `.` for project root, `~` for host user's home).
 - `target` — relative path under the sandbox workspace. `"repo"` resolves to `C:\Users\<sandbox-user>\<sandbox-name>\repo`.
 - Supports both folders and individual files.
+- Target names must be unique within a config. Duplicate targets are rejected at parse time.
 
 ### Shell
 
@@ -134,6 +135,7 @@ Fullscreen terminal application showing:
 - Destroying a running sandbox → stop it first, then destroy.
 - Multiple sandboxes mounting the same source folder → allowed (different per-sandbox SIDs, independent bind links).
 - Shared user account already exists from a previous install → detect and reuse.
+- Sandbox name collision (two projects with the same directory name) → refuse creation, user must supply `--name` with a different alias.
 - Synthetic SID collision → astronomically unlikely (randomly generated), but check and regenerate if it happens.
 
 ---
