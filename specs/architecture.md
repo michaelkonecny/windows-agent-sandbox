@@ -1,6 +1,6 @@
 # Architecture — Windows Agent Sandbox
 
-Status: draft. Source of truth for structure; the project spec (./spec.md) owns
+Status: approved. Source of truth for structure; the project spec (./spec.md) owns
 what the product does.
 
 Terminology:
