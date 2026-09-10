@@ -30,7 +30,7 @@ Two layers:
 1. Install (one-time) — engine creates the shared sandbox user account, sets up system ACLs, configures WFP rules. Requires elevation.
 2. Define — user writes a sandbox definition in the JSON config file.
 3. Create — engine generates a per-sandbox synthetic SID, sets up bind links and ACLs on mount targets, stores sandbox metadata. Requires elevation.
-4. Start — engine creates a restricted token, launches a process (e.g. Claude Code) under that token with the configured environment.
+4. Start — engine creates a restricted token, launches an interactive shell (cmd, PowerShell, or Git Bash) under that token with the configured environment. The user launches agents or other tools from within this shell.
 5. Stop — engine terminates sandbox processes.
 6. Destroy — engine removes bind links, ACLs, and sandbox metadata. Requires elevation.
 7. Uninstall — engine removes shared user account, shared SID ACLs, WFP rules. Requires elevation.
@@ -59,6 +59,18 @@ Mount semantics:
 - `source` — absolute path on the host (or `.` for project root, `~` for host user's home).
 - `target` — relative path under the sandbox workspace. `"repo"` resolves to `C:\Users\<sandbox-user>\<sandbox-name>\repo`.
 - Supports both folders and individual files.
+
+### Shell
+
+Configurable per sandbox via the `"shell"` key. Default: `"git-bash"`.
+
+Options:
+- `git-bash` (default) — `C:\Program Files\Git\bin\bash.exe`.
+- `cmd` — `cmd.exe`.
+- `powershell` — `powershell.exe` (Windows PowerShell 5.1).
+- `pwsh` — `pwsh.exe` (PowerShell 7+).
+
+Shell availability is checked at install time. Install reports any missing shells as warnings (since the user may not need all of them). Start refuses to launch if the configured shell is not found.
 
 ### Network presets
 
@@ -95,7 +107,7 @@ See Network mechanism for implementation details.
 ```
 sbx install                 # one-time setup (elevated)
 sbx create <name>           # sets up sandbox from config
-sbx start <name>            # launches agent inside sandbox
+sbx start <name>            # opens interactive shell inside sandbox
 sbx stop <name>             # terminates sandbox processes
 sbx destroy <name>          # tears down sandbox
 sbx list                    # shows all sandboxes and their state
