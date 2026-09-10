@@ -35,6 +35,8 @@ WRITE_RESTRICTED = 0x8
 TOKEN_DUPLICATE = 0x0002
 TOKEN_QUERY = 0x0008
 TOKEN_ASSIGN_PRIMARY = 0x0001
+TOKEN_ADJUST_DEFAULT = 0x0080
+WRITE_DAC = 0x00040000
 
 USER_PRIV_USER = 1
 UF_SCRIPT = 0x0001
@@ -71,6 +73,7 @@ TokenPrivileges = 3
 TokenRestrictedSids = 11
 SE_PRIVILEGE_ENABLED = 0x00000002
 
+TokenDefaultDacl = 6
 TokenPrimary = 1
 SecurityImpersonation = 2
 
@@ -485,7 +488,7 @@ def remove_sid_access(path: str, sid_ptr: int) -> None:
 # Token helpers
 
 def open_process_token(
-    access: int = TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY,
+    access: int = TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT | WRITE_DAC,
 ) -> int:
     token = wintypes.HANDLE()
     ok = advapi32.OpenProcessToken(
@@ -1388,3 +1391,49 @@ def get_tcp_pid(
                 and row.dwRemotePort == target_remote_port):
             return row.dwOwningPid
     return None
+
+
+# ── Token DACL helpers ─────────────────────────────────────
+
+advapi32.SetTokenInformation.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+]
+advapi32.SetTokenInformation.restype = wintypes.BOOL
+
+advapi32.SetKernelObjectSecurity.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p,
+]
+advapi32.SetKernelObjectSecurity.restype = wintypes.BOOL
+
+
+def set_token_null_default_dacl(token_handle: int) -> None:
+    """Set the token's default DACL to NULL so objects created by the
+    process are accessible to it.  Cygwin-based shells (git-bash) create
+    named pipes for signal handling during init; without this the
+    restricted SIDs aren't in the default DACL and creation fails."""
+    dacl_ptr = ctypes.c_void_p(0)
+    ok = advapi32.SetTokenInformation(
+        token_handle, TokenDefaultDacl,
+        ctypes.byref(dacl_ptr), ctypes.sizeof(dacl_ptr),
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def set_kernel_object_null_dacl(handle: int) -> None:
+    """Set a NULL DACL on a kernel object (e.g. a token handle) so the
+    process running under restricted SIDs can query it.  Cygwin calls
+    NtQueryInformationToken on its own process token during init;
+    without this the restricted token's object DACL blocks the query."""
+    sd = (ctypes.c_byte * 64)()
+    ok = advapi32.InitializeSecurityDescriptor(sd, SECURITY_DESCRIPTOR_REVISION)
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    ok = advapi32.SetSecurityDescriptorDacl(sd, True, None, False)
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    ok = advapi32.SetKernelObjectSecurity(
+        handle, DACL_SECURITY_INFORMATION, sd,
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())

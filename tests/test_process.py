@@ -228,6 +228,30 @@ def test_https_proxy_not_set(sandbox_name, sandbox_sid, credentials_path):
         handle.close()
 
 
+@pytest.mark.integration
+def test_git_bash_under_restricted_token(
+    sandbox_name, sandbox_sid, credentials_path
+):
+    """Test 69: git-bash (default shell) starts under a restricted token.
+    Cygwin/MSYS2 shells query their own token and create signal pipes
+    during init — both fail if the token DACLs don't include the
+    restricted SIDs."""
+    git_bash = r"C:\Program Files\Git\bin\bash.exe"
+    if not os.path.isfile(git_bash):
+        pytest.skip("git-bash not installed")
+
+    handle = _start(sandbox_name, sandbox_sid, credentials_path, shell=git_bash)
+    try:
+        _read_output(handle, timeout=8)
+        _send_command(handle, "echo GIT_BASH_OK")
+        output = _read_output(handle, timeout=8)
+        assert b"GIT_BASH_OK" in output
+    finally:
+        stop_sandbox(sandbox_name)
+        winapi.wait_for_process(handle.runner_process)
+        handle.close()
+
+
 # Helpers
 
 def _get_job_pids(job: int) -> list[int]:

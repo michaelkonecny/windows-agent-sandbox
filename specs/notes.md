@@ -33,6 +33,30 @@ Deviations from `plan.md` and follow-ups noticed during implementation.
   order read as native (little-endian) DWORDs. Must use `struct.unpack("<I",
   ...)` not `"!I"`.
 
+- Restricted SIDs skipped for Cygwin/MSYS2 shells — restricted SIDs add a
+  second access check against every secured kernel object.  Cygwin/MSYS2
+  shells (git-bash) touch session-local kernel objects during init
+  (CreateFileMapping for shared memory, named pipes for signal handling)
+  whose DACLs don't include the restricted SIDs.  No combination of token
+  DACL fixes (NULL default DACL, NULL object DACL, adding the logon SID)
+  resolved it — the problem is architectural: Cygwin's runtime accesses
+  objects whose security descriptors are outside our control.  For
+  Cygwin-based shells, `create_sandbox_token` uses `DISABLE_MAX_PRIVILEGE`
+  only (strips all privileges except `SeChangeNotifyPrivilege`) without
+  adding restricted SIDs.  Security for Cygwin shells still comes from:
+  separate user account, filesystem ACLs via synthetic SID, Job Object
+  containment, WFP network rules, and privilege stripping.  Native shells
+  (cmd, powershell, pwsh) keep the full restricted-SID token.  Detection
+  is by checking for `msys-2.0.dll` or `cygwin1.dll` near the shell binary.
+
+- Token DACL hardening for non-Cygwin shells — after creating the restricted
+  token, `set_kernel_object_null_dacl` sets a NULL DACL on the token object
+  itself (so the process can query its own token via NtQueryInformationToken),
+  and `set_token_null_default_dacl` sets the token's default DACL to NULL (so
+  objects created by the process are accessible).  Requires `WRITE_DAC` access
+  on the token handle, obtained by adding it to `open_process_token`'s access
+  mask.
+
 ## Follow-ups
 
 - TUI — deferred per spec, not implemented.

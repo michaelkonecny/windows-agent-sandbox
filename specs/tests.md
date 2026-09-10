@@ -65,6 +65,7 @@ Windows APIs (not pure logic).
 40. [integration] Stop terminates the Job Object — shell and all children exit.
 41. [integration] Shell spawned with `HTTPS_PROXY` env var when network preset is `claude_api_only` or `all`.
 42. [integration] Shell spawned without `HTTPS_PROXY` env var when network preset is `none`.
+69. [integration] Git-bash (Cygwin/MSYS2, the default shell) starts under a restricted token — send a command via pipe, receive output back. Skips if git-bash is not installed.
 
 ## proxy
 

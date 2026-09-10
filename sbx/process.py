@@ -24,6 +24,22 @@ SHELL_EXECUTABLES = {
     ShellKind.git_bash: r"C:\Program Files\Git\bin\bash.exe",
 }
 
+def _is_cygwin_shell(shell_path: str) -> bool:
+    """Detect if a shell is Cygwin/MSYS2-based by checking for the
+    runtime DLLs near the executable.  Git for Windows keeps the
+    real bash in usr/bin/ while bin/bash.exe is a tiny wrapper, so
+    we check the parent directory and the sibling usr/bin/ tree."""
+    p = Path(shell_path).resolve()
+    dirs = [p.parent]
+    usr_bin = p.parent.parent / "usr" / "bin"
+    if usr_bin.is_dir():
+        dirs.append(usr_bin)
+    return any(
+        (d / dll).exists()
+        for d in dirs
+        for dll in ("msys-2.0.dll", "cygwin1.dll")
+    )
+
 
 def _pipe_names(sandbox_name: str) -> tuple[str, str]:
     return (
@@ -258,9 +274,10 @@ def _execute_runner_inner(
     winapi.set_job_kill_on_close(job)
     _log(f"Job Object created: {job}")
 
-    _log("creating restricted token")
+    cygwin = _is_cygwin_shell(shell_path)
+    _log(f"creating restricted token (cygwin={cygwin})")
     from sbx.tokens import create_sandbox_token
-    token = create_sandbox_token(sandbox_sid)
+    token = create_sandbox_token(sandbox_sid, skip_restricted_sids=cygwin)
     _log(f"token created: {token}")
 
     _log(f"launching shell: {shell_path}")
