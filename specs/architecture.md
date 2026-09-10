@@ -107,8 +107,8 @@ Role: manage WFP rules and the proxy lifecycle.
 
 Role: launch and manage sandboxed shell processes via the command runner pattern, with full interactive terminal support via ConPTY.
 
-- Holds: runner launch (`CreateProcessWithLogonW` to re-invoke engine as `sbx-user`), Job Object creation, ConPTY pseudo-console creation and management, I/O relay between the CLI terminal and the runner's PTY, PID tracking, process termination.
-- Notes: the runner creates a Job Object, a Windows pseudo-console (`CreatePseudoConsole`), and attaches the sandboxed shell to both. The Job Object ensures all child processes (anything the user launches from the shell) inherit membership — this is how the proxy identifies which sandbox a connecting process belongs to. ConPTY gives proper terminal emulation — ANSI escapes, line editing, tab completion, Ctrl+C handling, window resize. The engine CLI side relays between its own console and the PTY's I/O pipes. On stop, the engine terminates the Job Object (which kills the shell and all its children).
+- Holds: runner launch (`CreateProcessWithLogonW` to re-invoke engine as `sbx-user`), named Job Object creation, ConPTY pseudo-console creation and management, I/O relay between the CLI terminal and the runner's PTY, PID tracking, process termination, re-invocation command line construction.
+- Notes: the runner creates a named Job Object (`sbx-job-<sandbox-name>`) with a security descriptor granting the host user read access, then creates a ConPTY and attaches the sandboxed shell to both. The Job Object ensures all child processes (anything the user launches from the shell) inherit membership — this is how the proxy identifies which sandbox a connecting process belongs to. ConPTY gives proper terminal emulation — ANSI escapes, line editing, tab completion, Ctrl+C handling, window resize. The engine CLI side relays between its own console and the PTY's I/O pipes. On stop, the engine terminates the Job Object (which kills the shell and all its children).
 - Trust boundary: this module's code runs in two contexts — engine CLI side (host user, unprivileged) handles runner launch and I/O relay; runner side (`sbx-user`) handles token creation, Job Object setup, and shell spawn. Same pattern as the elevation module.
 - Depends on: winapi (process APIs, ConPTY APIs, Job Object APIs), tokens (called by the runner side), identity (reads credentials for `CreateProcessWithLogonW`), store (registers/deregisters PIDs).
 
@@ -125,7 +125,7 @@ Role: run privileged operations via a UAC-elevated subprocess.
 Role: enforce per-sandbox network policy via TLS SNI inspection.
 
 - Holds: async TCP server on loopback, CONNECT tunnel handling, TLS ClientHello parsing for SNI extraction, domain allowlist matching, sandbox identification via Job Object membership, policy table (Job Object → allowed domains | "all" | "none").
-- Notes: runs as a separate long-lived process. Default policy is deny-all — a connection from an unknown process or one not in any registered Job Object is rejected. Communication between engine and proxy for policy updates is via a local socket or named pipe (detail TBD in proxy implementation spec).
+- Notes: Python asyncio. Runs as a separate long-lived process. Default policy is deny-all — a connection from an unknown process or one not in any registered Job Object is rejected. Engine communicates policy updates to the proxy over a local TCP socket.
 - PID→sandbox resolution: the proxy receives a connection, looks up the source PID via `GetExtendedTcpTable`, then checks which registered Job Object that PID belongs to (via `IsProcessInJob`). This handles the full process tree — the shell, its children (e.g. `claude`), and their children all inherit Job Object membership from the runner.
 - Lifecycle: PID file + idle timeout. Proxy writes `%LOCALAPPDATA%\sbx\proxy.pid` (PID + port). On `sbx start`, engine checks if proxy is alive (PID file + process existence), starts it if not, registers the sandbox's Job Object handle. On `sbx stop`, deregisters. Proxy self-terminates after 60s with no registered sandboxes. Engine crash → proxy idles out. Proxy crash → WFP blocks everything (fail-safe), next start detects stale PID file and starts fresh.
 - Depends on: winapi (`GetExtendedTcpTable`, `IsProcessInJob`).
@@ -353,7 +353,7 @@ class NetworkPolicy:
     allowed_domains: list[str] | None   # None = use preset defaults
 ```
 
-Communication mechanism between engine and proxy process TBD (named pipe or local socket). The proxy is a separate long-lived process; `ProxyControl` is the client stub in the engine.
+Engine communicates with the proxy over a local TCP socket on loopback. `ProxyControl` is the client stub in the engine; the proxy exposes a simple command protocol (register/deregister/stop) on a separate control port from the HTTPS proxy port.
 
 ## Cross-cutting
 
@@ -387,11 +387,16 @@ Python `logging` module. Engine sets up a file handler to `%LOCALAPPDATA%\sbx\sb
 
 All paths are `pathlib.Path` objects internally. SIDs are strings (`S-1-...`) except at the winapi boundary where they're raw pointers. PIDs are `int`. Handles are `int` (raw Windows HANDLE values), always wrapped in a context manager or explicitly closed.
 
+## Resolved decisions
+
+- Proxy implementation — asyncio. The proxy only needs CONNECT tunneling + SNI peeking; mitmproxy is overkill.
+- Proxy ↔ engine communication — local TCP socket. Python asyncio has clean TCP support; Windows named pipes are fiddly in Python.
+- Store locking — file-level lock (`msvcrt.locking`).
+- Process tree tracking — Job Objects. Runner creates a named Job Object (`sbx-job-<sandbox-name>`), shell and all children inherit membership. Proxy opens the Job Object by name and calls `IsProcessInJob` to identify which sandbox a connecting process belongs to. Security descriptor on the Job Object grants read access to the host user.
+- Packaging — develop as a pip-installable package (`python -m sbx`), decide final packaging later. The process module holds the re-invocation command line in a single configurable point so swapping to a PyInstaller exe is a one-line change.
+
 ## Open decisions
 
-- Proxy implementation — async Python (asyncio) vs. an existing tool (e.g. mitmproxy). Leans asyncio for full control and fewer dependencies.
-- Proxy ↔ engine communication — named pipe vs. local TCP socket for policy registration. Named pipe is more Windows-native; TCP is simpler to implement.
-- Store locking — file-level lock (`msvcrt.locking`) vs. a named mutex. File lock is simpler.
 - TUI framework — Textual or similar. Deferred per spec.
 - `CreateProcessAsUser` vs. `CreateProcessWithTokenW` for spawning the shell from the runner — both should work from the same logon session. Needs a PoC to confirm which plays better with ConPTY.
 - ConPTY window resize propagation — the engine CLI needs to detect its own console resize events and forward them to the pseudo-console via `ResizePseudoConsole`. Straightforward but needs testing across shell types.
