@@ -10,3 +10,6 @@ build/
 venv/
 .pytest_cache/
 .mypy_cache/
+.playwright-mcp/
+specs/plan.md
+poc/
