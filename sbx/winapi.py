@@ -1317,3 +1317,74 @@ def open_process(pid: int, access: int) -> int:
 
 def get_current_pid() -> int:
     return kernel32.GetCurrentProcessId()
+
+
+# ── Phase 5: Network isolation ────────────────────────────
+
+iphlpapi = ctypes.WinDLL("iphlpapi", use_last_error=True)
+
+AF_INET = 2
+TCP_TABLE_OWNER_PID_CONNECTIONS = 4
+
+
+class MIB_TCPROW_OWNER_PID(ctypes.Structure):
+    _fields_ = [
+        ("dwState", wintypes.DWORD),
+        ("dwLocalAddr", wintypes.DWORD),
+        ("dwLocalPort", wintypes.DWORD),
+        ("dwRemoteAddr", wintypes.DWORD),
+        ("dwRemotePort", wintypes.DWORD),
+        ("dwOwningPid", wintypes.DWORD),
+    ]
+
+
+iphlpapi.GetExtendedTcpTable.argtypes = [
+    ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD), wintypes.BOOL,
+    wintypes.ULONG, wintypes.DWORD, wintypes.DWORD,
+]
+iphlpapi.GetExtendedTcpTable.restype = wintypes.DWORD
+
+
+def get_tcp_pid(
+    remote_ip: str, remote_port: int,
+    local_ip: str, local_port: int,
+) -> int | None:
+    """Find the PID that owns a TCP connection from (remote_ip, remote_port)
+    to (local_ip, local_port).
+
+    Scans the TCP table for the entry where the CLIENT's local endpoint
+    matches (remote_ip, remote_port) and the CLIENT's remote endpoint
+    matches (local_ip, local_port).
+    """
+    import socket
+    import struct as _struct
+    target_local = _struct.unpack("<I", socket.inet_aton(remote_ip))[0]
+    target_local_port = socket.htons(remote_port)
+    target_remote = _struct.unpack("<I", socket.inet_aton(local_ip))[0]
+    target_remote_port = socket.htons(local_port)
+
+    buf_size = wintypes.DWORD(0)
+    iphlpapi.GetExtendedTcpTable(
+        None, ctypes.byref(buf_size), False,
+        AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0,
+    )
+    buf = (ctypes.c_byte * buf_size.value)()
+    err = iphlpapi.GetExtendedTcpTable(
+        buf, ctypes.byref(buf_size), False,
+        AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0,
+    )
+    if err != 0:
+        raise OSError(f"GetExtendedTcpTable failed: error {err}")
+
+    count = wintypes.DWORD.from_buffer_copy(buf).value
+    offset = ctypes.sizeof(wintypes.DWORD)
+    for i in range(count):
+        row = MIB_TCPROW_OWNER_PID.from_buffer_copy(
+            buf, offset + i * ctypes.sizeof(MIB_TCPROW_OWNER_PID),
+        )
+        if (row.dwLocalAddr == target_local
+                and row.dwLocalPort == target_local_port
+                and row.dwRemoteAddr == target_remote
+                and row.dwRemotePort == target_remote_port):
+            return row.dwOwningPid
+    return None
