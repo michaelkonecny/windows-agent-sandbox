@@ -289,66 +289,18 @@ Discoveries that affect the engine implementation:
 - Windows APIs via ctypes — bind filter (`BfSetupFilter`/`BfRemoveMapping`), user account management (`NetUserAdd`/`NetUserDel`), NTFS ACLs (`SetEntriesInAcl`/`SetNamedSecurityInfo`), restricted tokens (`CreateRestrictedToken`), WFP rules.
 - Local proxy — implementation TBD (could be a lightweight Python HTTPS proxy or an existing tool like `mitmproxy` in transparent mode).
 
-### Integration test infrastructure
+### Test infrastructure
 
-End-to-end tests drive the full chain programmatically: test harness → host shell → `sbx start` → sandbox shell → commands → exit → host shell.
+Two levels of automated tests. Full test plans in `specs/tests/`.
 
-#### Test driver — `ConPtyShell`
+- System tests (`specs/tests/system.md`) — ConPTY harness drives a host shell, types `sbx start`, interacts with the sandbox, and verifies behaviour from the outside. Full stack including CLI, terminal integration, and OS-level isolation. Uses `ConPtyShell`, a helper that wraps a ConPTY session with `write`/`expect`/`resize` methods and optional `pyte.Screen` for cursor/colour assertions.
+- Integration tests (`specs/tests/integration.md`) — call `start_sandbox` directly, talk through `StartHandle` pipes. No terminal, no CLI. Verify engine API contracts: named pipes, Job Object, token, environment.
 
-A helper class that wraps a ConPTY session. The test harness acts as the terminal emulator.
-
-```
-ConPtyShell
-  Role: programmatic terminal for integration tests — launches a process
-        inside a ConPTY and provides read/write/expect methods.
-  Holds:
-    - hpc — PseudoConsole handle
-    - pty_in_write, pty_out_read — pipe handles for writing input / reading output
-    - proc_handle, pid — the launched process
-    - screen — pyte.Screen (optional, for cursor/colour assertions)
-  API:
-    - __init__(cmd, cols=120, rows=30, env=None) — create ConPTY, launch process
-    - write(text) — send raw bytes/string to the process
-    - read(timeout=5.0) → bytes — blocking read with timeout
-    - expect(pattern, timeout=10.0) → Match — accumulate output until regex matches or timeout
-    - expect_prompt(timeout=10.0) — shorthand for expect(prompt_pattern)
-    - screen_text() → str — (if pyte enabled) current virtual screen content
-    - resize(cols, rows) — call ResizePseudoConsole
-    - close() — terminate process, close ConPTY, close handles
-    - __enter__ / __exit__ — context manager
-```
-
-`expect` reads in a loop, appending to a buffer, testing the regex after each chunk. On timeout it raises with the buffer contents for diagnostics.
-
-#### VT output handling
-
-Two tiers:
-
-- Tier 1 (default) — strip common VT escapes (CSI, OSC) from the accumulated buffer, regex match on plain text. Sufficient for command-output assertions.
-- Tier 2 (optional) — feed raw VT bytes into `pyte.Screen` (a pure-Python terminal emulator, test dependency). Query the virtual screen for cursor position, line content, SGR attributes. Use when testing cursor behaviour, colour output, or screen layout.
-
-#### Test scenarios
-
-Each test gets a unique sandbox name (UUID-based).
-
-- Sandbox shell opens and runs commands — launch host `cmd` in ConPTY, type `sbx start`, wait for sandbox prompt, run `whoami` (expect `sbx-user`), `exit`, verify host prompt returns.
-- Job Object inheritance — from sandbox shell, spawn `cmd /c echo MARKER`, open Job Object by name, verify PIDs.
-- Ctrl+C passthrough — start `ping -t 127.0.0.1`, send `\x03`, verify ping stops and prompt returns, verify shell still alive.
-- Interactive program (cursor, colour) — `cls` then `echo COLOURED` with colour set; pyte asserts cursor position and SGR attributes.
-- Terminal resize propagation — `resize(80, 24)` on harness, `mode con` in sandbox, expect `80` and `24` in output.
-- Exit returns to host shell — type `echo HOST_BEFORE`, enter sandbox, exit, type `echo HOST_AFTER`, expect both markers.
-- Stop from outside — while sandbox is running, call `stop_sandbox(name)` from test harness; expect host prompt reappears.
-- Git-bash under ConPTY — launch with `--shell git-bash`, `echo $SHELL`, `ls --color=auto`, verify output.
-
-#### Engine-level tests
-
-Direct tests against the `start_sandbox` / `StartHandle` pipe API (no terminal, no CLI). These test the named-pipe contract independently of the CLI relay. Existing tests cover: runner launches as `sbx-user`, named Job Object exists, shell and children inherit Job Object, echo round-trips through pipes, `stop_sandbox` terminates the job, `HTTPS_PROXY` set/unset, git-bash under restricted token.
-
-#### Test requirements
+Test requirements:
 
 - Elevation: test fixture calls `run_elevated("setup_test_env", ...)` for ACLs.
 - ConPTY: Windows 10 1809+ (build 17763). CI must be Win10 1809+ or Win11.
-- pyte: test dependency (`pip install pyte`).
+- pyte: test dependency for system tests (`pip install pyte`).
 - Timeouts: 10–15s for initial shell prompt (especially git-bash under restricted token), 5s for command output.
 
 ---
