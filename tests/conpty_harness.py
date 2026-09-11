@@ -122,7 +122,10 @@ class ConPtyShell:
             winapi.terminate_process(self._process)
 
         # Closing the ConPTY breaks the output pipe, which is what lets
-        # the reader thread's blocking ReadFile return.
+        # the reader thread's blocking ReadFile return.  It also takes any
+        # processes still attached to the pseudoconsole, including ones
+        # the shell spawned — which is why the harness needs no Job Object
+        # of its own to avoid leaking a tree between tests.
         winapi.close_pseudo_console(self._hpc)
         self._hpc = 0
 

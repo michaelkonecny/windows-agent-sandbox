@@ -25,6 +25,7 @@ from sbx.process import (
     StartHandle,
     resolve_shell,
     sandbox_is_running,
+    sandbox_job_name,
 )
 from sbx.store import SandboxRecord, SandboxState, Store
 
@@ -72,7 +73,7 @@ class Engine:
         if existing is not None:
             raise SandboxError(f"sandbox name '{name}' already exists")
 
-        sid = generate_sid()
+        sid = self._unused_sid()
 
         specs = [
             MountSpec(source=m.source, target=m.target, sandbox_sid=sid)
@@ -169,7 +170,11 @@ class Engine:
             del self._handles[record.name]
 
         try:
-            deregister_sandbox(record.name)
+            # The Job Object name, which is the key start registered the
+            # policy under. Passing the sandbox name left the policy in
+            # the proxy forever, and because the job name repeats for a
+            # sandbox of the same name, a later one could inherit it.
+            deregister_sandbox(sandbox_job_name(record.name))
         except Exception:
             pass
 
@@ -210,6 +215,24 @@ class Engine:
 
         run_elevated("uninstall_cleanup")
         log.info("uninstalled sbx")
+
+    def _unused_sid(self, attempts: int = 5) -> str:
+        """A synthetic SID no existing sandbox is using.
+
+        Collision is astronomically unlikely — the SID is random — but two
+        sandboxes sharing one would silently share filesystem access,
+        which is the very thing the SID exists to prevent, so it is worth
+        the lookup.
+        """
+        taken = {record.synthetic_sid for record in self.store.list()}
+        for _ in range(attempts):
+            sid = generate_sid()
+            if sid not in taken:
+                return sid
+            log.warning("synthetic SID collision on %s, regenerating", sid)
+        raise SandboxError(
+            f"could not generate an unused synthetic SID in {attempts} tries"
+        )
 
     def _live_state(self, record: SandboxRecord) -> SandboxState:
         """What the sandbox's state actually is.

@@ -85,8 +85,17 @@ def _pipe_names(sandbox_name: str) -> tuple[str, str]:
     )
 
 
-def _job_name(sandbox_name: str) -> str:
+def sandbox_job_name(sandbox_name: str) -> str:
+    """The Job Object name a sandbox's processes belong to.
+
+    Public because the proxy keys network policy by it, so the engine has
+    to register and deregister under exactly this string.
+    """
     return f"{JOB_PREFIX}{sandbox_name}"
+
+
+# Kept for the existing internal call sites.
+_job_name = sandbox_job_name
 
 
 def resolve_shell(shell: ShellKind) -> str:

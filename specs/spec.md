@@ -27,9 +27,9 @@ Two layers:
 
 ## Sandbox lifecycle
 
-1. Install (one-time) — engine creates the shared sandbox user account, sets up system ACLs, configures WFP rules. Requires elevation.
+1. Install (one-time) — engine creates the shared sandbox user account. Requires elevation. Intended to configure WFP rules too; it does not yet, so the network backstop described under Network mechanism is not in place (see Follow-ups). No system-path ACLs are needed — see Restricted tokens and synthetic SIDs.
 2. Init — `sbx init` scaffolds a `.sandbox/config.json` with defaults. User edits it.
-3. Create — engine generates a per-sandbox synthetic SID, sets up bind links and ACLs on mount targets, stores sandbox metadata. Requires elevation.
+3. Create — engine generates a per-sandbox synthetic SID, sets up bind links and ACLs on the mounts' backing paths, stores sandbox metadata. Requires elevation.
 4. Start — engine re-invokes itself as the sandbox user (via `CreateProcessWithLogonW`), creates a restricted token from that user's token, and launches an interactive shell under it inside a ConPTY. The shell appears embedded in the host terminal with full cursor, colour, and interactive program support. The user launches agents or other tools from within this shell. Does not require elevation. See Shell integration mechanism.
 5. Stop — engine terminates sandbox processes.
 6. Destroy — engine removes bind links, ACLs, and sandbox metadata. Requires elevation.
@@ -117,7 +117,7 @@ sbx status [name]           # detailed status of one sandbox
 sbx uninstall               # removes all sandbox infrastructure (elevated)
 ```
 
-`[name]` — optional sandbox name (alias). Defaults to current project directory name. Can also be a project path for disambiguation.
+`[path]` — optional project path, defaulting to the current directory. Sandboxes are looked up by project path; the `--name` alias given at create time labels the sandbox but cannot yet be used to address it (see Follow-ups).
 
 The tool runs unprivileged. Operations that need admin (user account creation, bind links, WFP rules, ACLs) request elevation for just that action via UAC prompt. The user never has to launch the whole tool as admin.
 
@@ -172,7 +172,7 @@ A single shared local user account (`sbx-user`) hosts all sandboxes. Individual 
 
 Each sandbox gets a per-sandbox synthetic SID — unique to that sandbox, ACL'd with read+write on the sandbox's mount targets. Isolates sandbox A from sandbox B's files.
 
-The restricted token's `RestrictedSids` list contains `[per_sandbox_sid, BUILTIN\Users]`. Because the token is fully restricted (not WRITE_RESTRICTED), both reads and writes must pass the restricted SID check. The sandbox process can only access:
+The restricted token's `RestrictedSids` list contains `[per_sandbox_sid, BUILTIN\Users, Everyone]`. `Everyone` is there because without it a shell fails to start with `STATUS_DLL_INIT_FAILED`. Because the token is fully restricted (not WRITE_RESTRICTED), both reads and writes must pass the restricted SID check. The sandbox process can only access:
 - Its own mounts — via the per-sandbox SID (ACL'd on mount backing paths)
 - System paths — via `BUILTIN\Users` (system paths like `C:\Windows`, `C:\Program Files`, Python/Node/Git directories already grant the Users group read access in their DACLs)
 
@@ -213,7 +213,7 @@ Single user, WFP backstop, proxy-based policy. Fail-safe by design — three lay
 
 #### Per-sandbox policy routing
 
-The proxy runs on a single port. All sandboxes share the same `HTTPS_PROXY` address. The proxy differentiates by looking up the source PID of each incoming connection (via `GetExtendedTcpTable`), mapping it to a sandbox (the engine registers which PIDs belong to which sandbox), and applying that sandbox's network policy.
+The proxy runs on a single port. All sandboxes share the same `HTTPS_PROXY` address. The proxy differentiates by looking up the source PID of each incoming connection (via `GetExtendedTcpTable`) and asking which sandbox's Job Object that process belongs to (`IsProcessInJob`); the engine registers a policy per Job Object name at start and removes it at stop. Job membership rather than a registered PID list, so anything the shell spawns is covered too.
 
 Multiple sandboxes with different network presets run concurrently — the proxy routes per-PID, WFP provides a uniform backstop.
 
@@ -314,7 +314,7 @@ Discoveries that affect the engine implementation:
 - Use `BfSetupFilter`/`BfRemoveMapping` from `bindfltapi.dll` — the lower-level bind filter API available on build 22621+. The higher-level `CreateBindLink`/`RemoveBindLink` (in `KernelBase.dll`) require build 25314+.
 - `BfRemoveMapping` takes two parameters `(HANDLE JobHandle, LPCWSTR VirtualizationRootPath)`, matching `BfSetupFilter`. Pass `NULL` for a global (non-job-scoped) mapping.
 - Use the Win32 ACL API (`SetEntriesInAcl` + `SetNamedSecurityInfo`) for synthetic SIDs — `icacls` rejects non-account SIDs with `ERROR_NONE_MAPPED` (1332). The `*S-1-...` syntax only works for SIDs that resolve to a known account.
-- `CreateRestrictedToken` with `DISABLE_MAX_PRIVILEGE` and a `RestrictedSids` list containing `[per_sandbox_sid, BUILTIN\Users]` produces the correct access behaviour: the per-sandbox SID gates mount access, while `BUILTIN\Users` allows read access to system paths whose DACLs grant the Users group.
+- `CreateRestrictedToken` with `DISABLE_MAX_PRIVILEGE` and a `RestrictedSids` list containing `[per_sandbox_sid, BUILTIN\Users]` produces the correct access behaviour: the per-sandbox SID gates mount access, while `BUILTIN\Users` allows read access to system paths whose DACLs grant the Users group. Implementation adds `Everyone` to that list — see Restricted tokens and synthetic SIDs.
 
 ### Tech stack
 
@@ -341,6 +341,12 @@ Test requirements:
 
 ## Follow-ups
 
+- Wire WFP rule installation into `sbx install`. Until then layer 1 of the
+  network design — the kernel-level backstop — does not exist at runtime, and
+  the presets rest on the proxy and `HTTPS_PROXY` alone.
+- Address sandboxes by their `--name` alias, not only by project path.
+- Mounting an individual file. The spec allows it; `mounts.create` always
+  creates the virtual path as a directory, and no test covers a file source.
 - Custom network presets (user-defined domain allowlists in config).
 - TUI detailed design and interaction spec.
 - Proxy implementation choice.

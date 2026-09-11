@@ -401,16 +401,23 @@ def create_bind_link(virtual_path: str, backing_path: str) -> None:
         )
 
 
-def remove_bind_link(virtual_path: str) -> None:
+def remove_bind_link(virtual_path: str) -> bool:
+    """Remove a bind link, reporting whether one was actually there.
+
+    Callers use the answer to tell a routine teardown from finding a
+    leftover mapping that a previous destroy failed to clean up.
+    """
     hr = bindfltapi.BfRemoveMapping(None, virtual_path)
-    if hr < 0:
-        E_INVALIDARG = -2147024809
-        NOT_FOUND = -2147024894
-        if hr in (NOT_FOUND, E_INVALIDARG):
-            return
-        raise OSError(
-            f"BfRemoveMapping failed: HRESULT 0x{hr & 0xFFFFFFFF:08X}"
-        )
+    if hr >= 0:
+        return True
+
+    E_INVALIDARG = -2147024809
+    NOT_FOUND = -2147024894
+    if hr in (NOT_FOUND, E_INVALIDARG):
+        return False
+    raise OSError(
+        f"BfRemoveMapping failed: HRESULT 0x{hr & 0xFFFFFFFF:08X}"
+    )
 
 
 def lookup_account_sid(name: str) -> str:

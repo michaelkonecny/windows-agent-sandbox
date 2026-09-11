@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 
+from sbx.config import CONFIG_DIR, CONFIG_FILE
 from sbx.engine import Engine
 from sbx.errors import SandboxError
 
@@ -246,7 +247,7 @@ def init(ctx: click.Context, project_path: str) -> None:
 
 
 @main.command()
-@click.argument("config_path")
+@click.argument("config_path", default=f"{CONFIG_DIR}/{CONFIG_FILE}")
 @click.option("--name", "-n", default=None, help="Sandbox name.")
 @click.pass_context
 def create(ctx: click.Context, config_path: str, name: str | None) -> None:

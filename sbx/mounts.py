@@ -85,10 +85,16 @@ def create(
         target_path = ws / spec.target
         target_path.mkdir(parents=True, exist_ok=True)
 
+        # A mapping here means a previous destroy did not finish. Clear it
+        # and say so — silently reusing it would hide the earlier failure.
         try:
-            winapi.remove_bind_link(str(target_path))
-        except OSError:
-            pass
+            if winapi.remove_bind_link(str(target_path)):
+                log.warning(
+                    "removed a leftover bind link at %s; a previous destroy "
+                    "of this sandbox did not complete", target_path,
+                )
+        except OSError as e:
+            log.warning("could not clear %s: %s", target_path, e)
 
         try:
             winapi.create_bind_link(str(target_path), str(spec.source))

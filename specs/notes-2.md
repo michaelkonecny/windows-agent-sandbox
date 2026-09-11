@@ -163,6 +163,60 @@ Checked and found clean: every new ctypes prototype and struct layout
 against the SDK, the dangling-pointer class that caused the original
 ConPTY bug, and handle cleanup on the main ConPTY paths.
 
+## Spec-versus-code cross-check
+
+A second pass compared every concrete claim in `spec.md` against the
+implementation. Most matched — named pipes, Job Object naming, the resize
+sequence, the runner's eleven steps, the Cygwin carve-out, mount ACLs, the
+config keys and defaults, and the edge cases all check out. What did not:
+
+Fixed in code, because the spec was right and the code was missing it:
+
+- Network policy leaked in the proxy. `start` registered it under the Job
+  Object name, `stop` deregistered under the sandbox name, so the entry
+  never went away. The sharp edge: `start` only registers when the preset
+  is not `none`, and a Job Object name repeats for a sandbox of the same
+  name — so a stale `all` policy could outlive its sandbox and still match
+  a later one deliberately configured with no network.
+- `sbx create` required a config path while the spec (and every sibling
+  command) says it defaults. It now defaults to `.sandbox/config.json`.
+- A leftover bind link was cleared silently; the spec asks for a warning,
+  which is what tells you a previous destroy failed.
+- Synthetic SID collisions were never checked for, though the spec says to
+  check and regenerate. Two sandboxes sharing a SID would silently share
+  filesystem access — the one thing the SID exists to prevent.
+
+Fixed in the spec, because the code was right:
+
+- `RestrictedSids` was described as two SIDs in two places and three in a
+  third; the code uses three (`Everyone` included, to avoid
+  `STATUS_DLL_INIT_FAILED`).
+- The proxy was described as mapping registered PIDs to sandboxes. It
+  actually asks which Job Object a PID belongs to, which is better — it
+  covers anything the shell spawns, where a PID list would not.
+- `[name]` was documented as an alias that could address a sandbox. Only
+  project paths work; `--name` labels a sandbox but cannot address it.
+
+### `sbx install` does not install the WFP rules
+
+Worth its own heading. The spec presents WFP as layer 1 of a three-layer
+fail-safe — "always on", the backstop that blocks everything if the proxy
+dies or an agent ignores `HTTPS_PROXY`. `Engine.install` only creates the
+user account; `network.install_wfp_rules` has no caller outside its tests.
+`uninstall` removes rules nobody installed.
+
+So the network isolation currently rests on the proxy and the environment
+variable alone, and a sandbox that ignores `HTTPS_PROXY` has unrestricted
+egress. Not fixed here: wiring it up means installing machine-wide
+firewall rules, which is not something to switch on unattended. It is the
+one gap that makes a spec guarantee untrue rather than merely unbuilt.
+
+### Not contradictions, just unbuilt
+
+The TUI, custom domain allowlists, and mounting an individual file — the
+spec allows a file mount, but `mounts.create` always creates the virtual
+path as a directory and no test covers it. All three are in Follow-ups.
+
 ## Also worth knowing
 
 - The sandbox shell inherits the host process's environment. `PROMPT` set
