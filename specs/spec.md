@@ -1,6 +1,6 @@
 # Windows Agent Sandbox — Spec
 
-Status: draft
+Status: approved
 Last updated: 2026-09-11
 
 ## Goal
@@ -28,9 +28,9 @@ Two layers:
 ## Sandbox lifecycle
 
 1. Install (one-time) — engine creates the shared sandbox user account, sets up system ACLs, configures WFP rules. Requires elevation.
-2. Define — user writes a sandbox definition in the JSON config file.
+2. Init — `sbx init` scaffolds a `.sandbox/config.json` with defaults. User edits it.
 3. Create — engine generates a per-sandbox synthetic SID, sets up bind links and ACLs on mount targets, stores sandbox metadata. Requires elevation.
-4. Start — engine creates a restricted token, launches an interactive shell under that token inside a ConPTY. The shell appears embedded in the host terminal with full cursor, colour, and interactive program support. See Shell integration mechanism.
+4. Start — engine re-invokes itself as the sandbox user (via `CreateProcessWithLogonW`), creates a restricted token from that user's token, and launches an interactive shell under it inside a ConPTY. The shell appears embedded in the host terminal with full cursor, colour, and interactive program support. The user launches agents or other tools from within this shell. Does not require elevation. See Shell integration mechanism.
 5. Stop — engine terminates sandbox processes.
 6. Destroy — engine removes bind links, ACLs, and sandbox metadata. Requires elevation.
 7. Uninstall — engine removes shared user account, shared SID ACLs, WFP rules. Requires elevation.
@@ -59,6 +59,19 @@ Mount semantics:
 - `source` — absolute path on the host (or `.` for project root, `~` for host user's home).
 - `target` — relative path under the sandbox workspace. `"repo"` resolves to `C:\Users\<sandbox-user>\<sandbox-name>\repo`.
 - Supports both folders and individual files.
+- Target names must be unique within a config. Duplicate targets are rejected at parse time.
+
+### Shell
+
+Configurable per sandbox via the `"shell"` key. Default: `"git-bash"`.
+
+Options:
+- `git-bash` (default) — `C:\Program Files\Git\bin\bash.exe`.
+- `cmd` — `cmd.exe`.
+- `powershell` — `powershell.exe` (Windows PowerShell 5.1).
+- `pwsh` — `pwsh.exe` (PowerShell 7+).
+
+Shell availability is checked at install time. Install reports any missing shells as warnings (since the user may not need all of them). Start refuses to launch if the configured shell is not found.
 
 ### Network presets
 
@@ -94,14 +107,17 @@ See Network mechanism for implementation details.
 
 ```
 sbx install                 # one-time setup (elevated)
-sbx create <name>           # sets up sandbox from config
-sbx start <name>            # launches agent inside sandbox
-sbx stop <name>             # terminates sandbox processes
-sbx destroy <name>          # tears down sandbox
+sbx init                    # scaffolds .sandbox/config.json in current directory
+sbx create [--name alias]   # sets up sandbox from .sandbox/config.json (elevated)
+sbx start [name]            # opens interactive shell inside sandbox
+sbx stop [name]             # terminates sandbox processes
+sbx destroy [name]          # tears down sandbox (elevated)
 sbx list                    # shows all sandboxes and their state
-sbx status <name>           # detailed status of one sandbox
+sbx status [name]           # detailed status of one sandbox
 sbx uninstall               # removes all sandbox infrastructure (elevated)
 ```
+
+`[name]` — optional sandbox name (alias). Defaults to current project directory name. Can also be a project path for disambiguation.
 
 The tool runs unprivileged. Operations that need admin (user account creation, bind links, WFP rules, ACLs) request elevation for just that action via UAC prompt. The user never has to launch the whole tool as admin.
 
@@ -120,6 +136,7 @@ Fullscreen terminal application showing:
 - Destroying a running sandbox → stop it first, then destroy.
 - Multiple sandboxes mounting the same source folder → allowed (different per-sandbox SIDs, independent bind links).
 - Shared user account already exists from a previous install → detect and reuse.
+- Sandbox name collision (two projects with the same directory name) → refuse creation, user must supply `--name` with a different alias.
 - Synthetic SID collision → astronomically unlikely (randomly generated), but check and regenerate if it happens.
 - Runner fails to connect to named pipes within 15s → host closes pipes, terminates runner, reports error.
 - Shell crashes or exits → runner detects via `WaitForSingleObject`, closes ConPTY, relay threads exit on `ERROR_BROKEN_PIPE`, `sbx start` returns to host prompt.
@@ -140,6 +157,7 @@ Internal mechanisms — how the engine implements filesystem isolation, network 
 - WFP — Windows Filtering Platform. Kernel-level network filtering that can scope rules by user SID.
 - SNI — Server Name Indication. A field in the TLS handshake that contains the target domain name. The proxy inspects this to enforce domain allowlists without decrypting traffic.
 - ConPTY — Windows Pseudo Console (`CreatePseudoConsole`, available since Windows 10 1809). Provides a real console to a process while exposing its I/O as a VT byte stream on a pipe pair. The process sees a normal console (cursor, colour, mouse, `ReadConsoleInput` all work); the pipe owner reads/writes VT escape sequences. Windows Terminal uses ConPTY internally.
+- VT — Virtual Terminal escape sequences. In-band control codes (cursor movement, colour, screen clearing) embedded in a byte stream, the same convention Unix terminals use.
 
 ### Filesystem mechanism
 
@@ -151,22 +169,13 @@ A single shared local user account (`sbx-user`) hosts all sandboxes. Individual 
 
 #### Restricted tokens and synthetic SIDs
 
-Each sandbox gets two synthetic SIDs in its restricted token:
+Each sandbox gets a per-sandbox synthetic SID — unique to that sandbox, ACL'd with read+write on the sandbox's mount targets. Isolates sandbox A from sandbox B's files.
 
-- Per-sandbox SID — unique to this sandbox. ACL'd with read+write on the sandbox's mount targets. Isolates sandbox A from sandbox B's files.
-- Shared system SID — common across all sandboxes. ACL'd with read-only on system paths the agent needs to function.
+The restricted token's `RestrictedSids` list contains `[per_sandbox_sid, BUILTIN\Users]`. Because the token is fully restricted (not WRITE_RESTRICTED), both reads and writes must pass the restricted SID check. The sandbox process can only access:
+- Its own mounts — via the per-sandbox SID (ACL'd on mount backing paths)
+- System paths — via `BUILTIN\Users` (system paths like `C:\Windows`, `C:\Program Files`, Python/Node/Git directories already grant the Users group read access in their DACLs)
 
-Because the token is fully restricted (not WRITE_RESTRICTED), both reads and writes must pass the restricted SID check. The sandbox process can only access:
-- Its own mounts (via the per-sandbox SID)
-- System paths (via the shared system SID, read-only)
-
-#### System paths granted via shared SID
-
-Read-only access for all sandboxes:
-- `C:\Windows`
-- `C:\Program Files` (or specific subdirectories for required tools)
-- Python, Node, Git install directories
-- Temp directories (`C:\Windows\Temp`, sandbox user's temp)
+No shared synthetic SID or extra system path ACLs are needed — `BUILTIN\Users` in RestrictedSids is sufficient.
 
 #### Mount setup
 
@@ -206,6 +215,19 @@ Multiple sandboxes with different network presets run concurrently — the proxy
 
 The sandbox shell runs embedded in the host terminal via ConPTY. The host process and the shell run under different user accounts (host user vs `sbx-user`), so a cross-user transport bridges them.
 
+#### Process launch — command runner pattern
+
+Avoids elevation for start/stop.
+
+1. Engine CLI (unprivileged) calls `CreateProcessWithLogonW` to re-invoke itself as `sbx-user` with an internal `_run` subcommand, passing the sandbox name.
+2. The re-invoked instance (the "runner") is now running as `sbx-user` with a full token. It opens its own process token and calls `CreateRestrictedToken` with `DISABLE_MAX_PRIVILEGE` and `[per_sandbox_sid, BUILTIN\Users, Everyone]` in `RestrictedSids`.
+3. The runner calls `CreateProcessAsUser` with the restricted token to spawn the configured shell. This works without special privileges because the restricted token is derived from the runner's own logon session.
+4. The runner stays alive to relay VT bytes between the engine CLI and the sandboxed shell, and exits when the shell exits.
+
+Sandbox user credentials are stored DPAPI-encrypted during install, read by the engine at start time.
+
+The ConPTY is created by the runner under its own unrestricted `sbx-user` token; only the shell child gets the restricted token. No ConPTY operation therefore depends on a stripped privilege.
+
 #### Architecture
 
     host terminal ←VT bytes→ named pipe ←VT bytes→ ConPTY ←console API→ shell
@@ -218,13 +240,13 @@ Three components:
 
 #### Runner process
 
-The engine spawns a runner process as `sbx-user` (`CreateProcessWithLogonW`, `CREATE_NO_WINDOW`). The runner:
+The runner:
 
 1. Connects to the host's named pipes (client side).
 2. Creates a pipe pair for ConPTY (`create_pipe`, non-inheritable).
 3. Creates a ConPTY: `CreatePseudoConsole(cols, rows, pty_in_read, pty_out_write)`. Closes the ConPTY-side pipe ends — ConPTY owns them.
 4. Creates a named Job Object (`Global\sbx-job-{name}`) with kill-on-close and null DACL.
-5. Creates a restricted token (`CreateRestrictedToken` with `DISABLE_MAX_PRIVILEGE` and per-sandbox restricted SIDs).
+5. Creates the restricted token (see Process launch above).
 6. Builds a `STARTUPINFOEX` with `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` pointing to the ConPTY handle.
 7. Launches the shell via `CreateProcessAsUserW` with the restricted token and attribute list. No `STARTF_USESTDHANDLES` — the ConPTY provides the console.
 8. Assigns the shell to the Job Object.
@@ -236,7 +258,9 @@ The initial terminal size (cols, rows) is passed to the runner as command-line a
 
 #### Cygwin/MSYS2 shells
 
-Git-bash and other Cygwin-based shells query their own token and create named pipes during init. Both fail under a restricted token unless the token's default DACL and the token object's DACL include the restricted SIDs. The engine sets null DACLs on both (`SetTokenInformation` for the default DACL, `SetKernelObjectSecurity` for the token object).
+Git-bash and other Cygwin-based shells query their own token and create session-local kernel objects (shared memory, signal-handling named pipes) during init. The additional access check imposed by `RestrictedSids` fails against those objects, so Cygwin shells launch with `DISABLE_MAX_PRIVILEGE` only and an empty `RestrictedSids` list. The engine detects them by looking for `msys-2.0.dll` or `cygwin1.dll` next to the executable or in the sibling `usr/bin` tree.
+
+Consequence — a Cygwin shell keeps privilege stripping but loses synthetic-SID filesystem isolation. Non-Cygwin shells (`cmd`, `powershell`, `pwsh`) get the full restricted token. For tokens that do carry restricted SIDs, the engine also sets null DACLs on the token's default DACL (`SetTokenInformation`) and on the token object itself (`SetKernelObjectSecurity`), so the restricted process can open its own token and create kernel objects.
 
 #### Host relay
 
@@ -253,7 +277,7 @@ Console mode save/restore is wrapped in a context manager with `finally` — a c
 
 #### Terminal resize
 
-In-band signalling over the input named pipe. The host sends `\x1b]9999;<cols>;<rows>\x07` (a private-use OSC sequence). The runner's input relay recognises and strips it, then calls `ResizePseudoConsole(hpc, cols, rows)`.
+In-band signalling over the input named pipe. The host sends `\x1b]9999;<cols>;<rows>\x07` (a private-use OSC sequence — Operating System Command, an escape sequence class terminals use for out-of-band requests like setting the window title). The runner's input relay recognises and strips it, then calls `ResizePseudoConsole(hpc, cols, rows)`.
 
 Rationale: avoids a third named pipe and its connection handshake. The sequence uses an unregistered OSC number to avoid collision with standard terminal escapes.
 
@@ -293,14 +317,14 @@ Discoveries that affect the engine implementation:
 
 Two levels of automated tests. Full test plans in `specs/tests/`.
 
-- System tests (`specs/tests/system.md`) — ConPTY harness drives a host shell, types `sbx start`, interacts with the sandbox, and verifies behaviour from the outside. Full stack including CLI, terminal integration, and OS-level isolation. Uses `ConPtyShell`, a helper that wraps a ConPTY session with `write`/`expect`/`resize` methods and optional `pyte.Screen` for cursor/colour assertions.
+- System tests (`specs/tests/system.md`) — a ConPTY harness drives a host shell, types `sbx start`, interacts with the sandbox, and verifies behaviour from the outside. Full stack including CLI, terminal integration, and OS-level isolation. Uses `ConPtyShell`, a helper that wraps a ConPTY session with `write`/`expect`/`resize` methods and optional `pyte.Screen` for cursor/colour assertions.
 - Integration tests (`specs/tests/integration.md`) — call `start_sandbox` directly, talk through `StartHandle` pipes. No terminal, no CLI. Verify engine API contracts: named pipes, Job Object, token, environment.
 
 Test requirements:
 
 - Elevation: test fixture calls `run_elevated("setup_test_env", ...)` for ACLs.
 - ConPTY: Windows 10 1809+ (build 17763). CI must be Win10 1809+ or Win11.
-- pyte: test dependency for system tests (`pip install pyte`).
+- pyte: test dependency for system tests (`pip install pyte`) — a pure-Python VT terminal emulator, used to turn a raw VT byte stream into a screen buffer that tests can assert against.
 - Timeouts: 10–15s for initial shell prompt (especially git-bash under restricted token), 5s for command output.
 
 ---
@@ -311,10 +335,10 @@ Test requirements:
 - TUI detailed design and interaction spec.
 - Proxy implementation choice.
 - Whether the engine should support "hot" config changes (modify mounts/network on a running sandbox) or require stop/recreate.
-- Init command that scaffolds a config file.
 - Log capture and forwarding from sandbox processes.
 - Resize escape sequence format — currently `\x1b]9999;<cols>;<rows>\x07` (private OSC). Any unregistered OSC number works; a dedicated third named pipe is cleaner but adds connection complexity.
 - Whether to keep the `StartHandle` pipe API for non-interactive callers (a future API that sends commands programmatically without a terminal). If so, the VT stream over pipes *is* the programmatic API.
+- Restoring synthetic-SID filesystem isolation for Cygwin/MSYS2 shells — currently they trade it away to start at all (see Cygwin/MSYS2 shells).
 
 ## Non-goals
 
