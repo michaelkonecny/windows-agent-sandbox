@@ -226,7 +226,12 @@ def create(ctx: click.Context, config_path: str, name: str | None) -> None:
 @click.pass_context
 def start(ctx: click.Context, project_path: str) -> None:
     cols, rows = _terminal_size()
-    handle = _engine(ctx).start(project_path, cols=cols, rows=rows)
+    try:
+        handle = _engine(ctx).start(project_path, cols=cols, rows=rows)
+    except SandboxError as e:
+        # A traceback in the middle of a terminal session is no way to
+        # report "already running".
+        raise click.ClickException(str(e))
     _interactive_session(handle)
 
 

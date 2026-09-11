@@ -24,14 +24,17 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
 import pytest
 
 from conpty_harness import ConPtyShell
+from jobs import sandbox_job_pids
 from sbx import winapi
 from sbx.identity import SANDBOX_USER, _credentials_path, store_credentials
 from sbx.process import stop_sandbox
@@ -336,7 +339,115 @@ def test_paths_outside_any_mount_are_denied(sandbox):
         term.expect(r"(?i)denied", timeout=STEP_TIMEOUT)
 
 
+# ── Privilege isolation ──────────────────────────────────────
+
+
+def test_cannot_kill_a_host_process(sandbox):
+    """A sandbox must not reach processes belonging to the host user.
+
+    Kills a throwaway process rather than the test runner: if the
+    isolation ever fails, the cost is a lost `ping` and a red test, not a
+    dead test session.
+    """
+    victim = subprocess.Popen(
+        ["ping", "-t", "127.0.0.1"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert victim.poll() is None, "the throwaway process died early"
+        with host_terminal() as term:
+            enter_sandbox(term, sandbox)
+            term.send_line(f"taskkill /F /PID {victim.pid}")
+            # Under a restricted token taskkill reports "Not enough memory
+            # resources are available", which is Windows being misleading
+            # about a denial rather than anything to do with memory — so
+            # match any error and let the survival check below carry the
+            # weight.
+            term.expect(r"(?i)ERROR|denied", timeout=STEP_TIMEOUT)
+
+        time.sleep(1)
+        assert victim.poll() is None, "the sandbox killed a host process"
+    finally:
+        victim.kill()
+        victim.wait(timeout=10)
+
+
+def test_cannot_create_a_user(sandbox):
+    probe = "sbx-probe-user"
+    try:
+        with host_terminal() as term:
+            enter_sandbox(term, sandbox)
+            term.send_line(f"net user {probe} Pa55w0rd!x /add")
+            term.expect(r"(?i)denied|not have the required|error",
+                        timeout=STEP_TIMEOUT)
+
+        assert not winapi.user_exists(probe), "the sandbox created an account"
+    finally:
+        if winapi.user_exists(probe):
+            winapi.delete_user(probe)
+
+
+def test_registry_write_is_blocked(sandbox):
+    """Machine-wide registry stays read-only: readable, not writable."""
+    key = r"HKLM\SOFTWARE\sbx-probe-key"
+    try:
+        with host_terminal() as term:
+            enter_sandbox(term, sandbox)
+
+            term.send_line(r"reg query HKLM\SOFTWARE\Microsoft /ve")
+            term.expect(r"(?i)HKEY_LOCAL_MACHINE|SOFTWARE", timeout=STEP_TIMEOUT)
+
+            term.send_line(f"reg add {key} /f")
+            term.expect(r"(?i)denied|error", timeout=STEP_TIMEOUT)
+
+        assert not _registry_key_exists(r"SOFTWARE\sbx-probe-key")
+    finally:
+        _delete_registry_key(r"SOFTWARE\sbx-probe-key")
+
+
+def _registry_key_exists(subkey: str) -> bool:
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, subkey):
+            return True
+    except OSError:
+        return False
+
+
+def _delete_registry_key(subkey: str) -> None:
+    import winreg
+
+    try:
+        winreg.DeleteKey(winreg.HKEY_LOCAL_MACHINE, subkey)
+    except OSError:
+        pass
+
+
 # ── Job Object containment ───────────────────────────────────
+
+
+def test_deep_process_tree_is_tracked(sandbox):
+    """Job membership is inherited all the way down, not just one level.
+
+    A grandchild several `cmd /c` hops from the shell still belongs to the
+    sandbox's job — which is what lets the proxy attribute its
+    connections and lets stop take the whole tree.
+    """
+    with host_terminal() as term:
+        enter_sandbox(term, sandbox)
+        before = len(sandbox_job_pids(sandbox.name))
+
+        term.send_line("start /b cmd /c cmd /c ping -t 127.0.0.1")
+        term.send_line("echo SPAWNED=%RANDOM%")
+        term.expect(r"SPAWNED=\d+", timeout=STEP_TIMEOUT)
+        time.sleep(2)
+
+        after = sandbox_job_pids(sandbox.name)
+        assert len(after) > before, (
+            f"expected the nested processes to join the job, "
+            f"had {before} and now {len(after)}"
+        )
 
 
 def test_stop_terminates_the_process_tree(sandbox):
@@ -373,6 +484,18 @@ def test_start_after_stop(sandbox):
             term.send_line("exit")
             term.expect(CMD_PROMPT, timeout=PROMPT_TIMEOUT)
         stop_quietly(sandbox.name)
+
+
+def test_double_start_is_refused(sandbox):
+    """Starting a sandbox that is already running must say so, rather than
+    quietly opening a second shell against the same named pipes."""
+    with host_terminal() as first:
+        enter_sandbox(first, sandbox)
+
+        with host_terminal() as second:
+            second.send_line(sbx("start", str(sandbox)))
+            second.expect(r"(?i)error|already|in use|traceback",
+                          timeout=PROMPT_TIMEOUT)
 
 
 def test_full_round_trip():

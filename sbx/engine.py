@@ -99,12 +99,21 @@ class Engine:
         cols: int | None = None, rows: int | None = None,
     ) -> StartHandle:
         from sbx.network import register_sandbox
-        from sbx.process import start_sandbox
+        from sbx.process import sandbox_is_running, start_sandbox
 
         project_path = Path(project_path).resolve()
         record = self.store.get(project_path)
         if record is None:
             raise SandboxError(f"no sandbox for {project_path}")
+
+        # Starting twice otherwise fails silently: the second runner
+        # connects to the first host's named pipes and the second host
+        # waits for a connection that never comes.
+        if sandbox_is_running(record.name):
+            raise SandboxError(
+                f"sandbox {record.name} is already running; "
+                f"stop it before starting it again"
+            )
 
         cfg = load_config(record.config_path)
         shell_path = resolve_shell(cfg.shell)

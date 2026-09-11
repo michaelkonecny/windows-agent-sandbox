@@ -179,6 +179,18 @@ so each is revertible on its own.
   you're away. My recommendation is to default to `pwsh` and keep
   git-bash opt-in.
 
+### Refuse a double start — done
+
+- `specs/tests/system.md` expects a clear error; reality was a silent
+  failure. The second runner connects to the *first* host's named pipes,
+  so the second host waits 15s for a connection that never comes and the
+  user gets nothing back.
+- `engine.start` now refuses when the sandbox's Job Object already exists
+  — the job is created with kill-on-close, so it exists exactly while the
+  sandbox is up. `sbx start` reports it as a CLI error rather than a
+  traceback. `test_start_after_stop` still passes, so the check does not
+  block legitimate restarts.
+
 ### Leave the host environment inherited — no change
 
 - The sandbox shell keeps inheriting the host process's environment.

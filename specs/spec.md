@@ -138,6 +138,7 @@ Fullscreen terminal application showing:
 - Shared user account already exists from a previous install → detect and reuse.
 - Sandbox name collision (two projects with the same directory name) → refuse creation, user must supply `--name` with a different alias.
 - Synthetic SID collision → astronomically unlikely (randomly generated), but check and regenerate if it happens.
+- Starting a sandbox that is already running → refuse with a clear error naming the sandbox. Without the check it fails silently: the second runner connects to the first host's named pipes, and the second host waits for a connection that never arrives.
 - Runner fails to connect to named pipes within 15s → host closes pipes, terminates runner, reports error.
 - Shell crashes or exits → runner detects via `WaitForSingleObject`, closes ConPTY, relay threads exit on `ERROR_BROKEN_PIPE`, `sbx start` returns to host prompt.
 - Host terminal doesn't support VT input mode → degrade gracefully; VT output still works. Interactive programs that need VT input (mouse, function keys) won't work but basic typing does.

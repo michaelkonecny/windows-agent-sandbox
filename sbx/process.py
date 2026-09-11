@@ -239,6 +239,22 @@ def start_sandbox(
     )
 
 
+def sandbox_is_running(sandbox_name: str) -> bool:
+    """Whether a sandbox currently has a live runner.
+
+    The Job Object is created by the runner with kill-on-close, so it
+    exists exactly while the sandbox is up.
+    """
+    try:
+        job = winapi.open_job_object(
+            _job_name(sandbox_name), winapi.JOB_OBJECT_QUERY
+        )
+    except OSError:
+        return False
+    winapi.close_handle(job)
+    return True
+
+
 def stop_sandbox(sandbox_name: str) -> None:
     name = _job_name(sandbox_name)
     try:

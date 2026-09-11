@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from jobs import job_pids
 from sbx import winapi
 from sbx.config import NetworkPreset
 from sbx.identity import generate_sid, get_credentials
@@ -161,7 +162,7 @@ def test_shell_inherits_job_object(
             winapi.JOB_OBJECT_QUERY | winapi.JOB_OBJECT_TERMINATE,
         )
         try:
-            pids = _get_job_pids(job)
+            pids = job_pids(job)
             assert len(pids) > 0
         finally:
             winapi.close_handle(job)
@@ -188,7 +189,7 @@ def test_child_inherits_job_object(
             winapi.JOB_OBJECT_QUERY | winapi.JOB_OBJECT_TERMINATE,
         )
         try:
-            pids = _get_job_pids(job)
+            pids = job_pids(job)
             assert len(pids) >= 1
         finally:
             winapi.close_handle(job)
@@ -333,28 +334,3 @@ def test_git_bash_under_restricted_token(
 
 
 # Helpers
-
-def _get_job_pids(job: int) -> list[int]:
-    import ctypes
-    from ctypes import wintypes
-
-    JobObjectBasicProcessIdList = 3
-
-    class JOBOBJECT_BASIC_PROCESS_ID_LIST(ctypes.Structure):
-        _fields_ = [
-            ("NumberOfAssignedProcesses", wintypes.DWORD),
-            ("NumberOfProcessIdsInList", wintypes.DWORD),
-            ("ProcessIdList", ctypes.c_size_t * 128),
-        ]
-
-    info = JOBOBJECT_BASIC_PROCESS_ID_LIST()
-    info.NumberOfAssignedProcesses = 128
-    ret_len = wintypes.DWORD()
-    ok = winapi.kernel32.QueryInformationJobObject(
-        job, JobObjectBasicProcessIdList,
-        ctypes.byref(info), ctypes.sizeof(info),
-        ctypes.byref(ret_len),
-    )
-    if not ok:
-        raise ctypes.WinError(ctypes.get_last_error())
-    return [info.ProcessIdList[i] for i in range(info.NumberOfProcessIdsInList)]
