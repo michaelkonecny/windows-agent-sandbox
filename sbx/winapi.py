@@ -884,6 +884,10 @@ DISABLE_NEWLINE_AUTO_RETURN = 0x0008
 KEY_EVENT = 0x0001
 WINDOW_BUFFER_SIZE_EVENT = 0x0004
 
+# A pseudoconsole always emits UTF-8, so a console being written its
+# output has to be told to read the bytes that way.
+CP_UTF8 = 65001
+
 
 # Structures
 
@@ -1052,6 +1056,12 @@ kernel32.GetConsoleScreenBufferInfo.argtypes = [
     wintypes.HANDLE, ctypes.POINTER(CONSOLE_SCREEN_BUFFER_INFO),
 ]
 kernel32.GetConsoleScreenBufferInfo.restype = wintypes.BOOL
+
+kernel32.GetConsoleOutputCP.argtypes = []
+kernel32.GetConsoleOutputCP.restype = wintypes.UINT
+
+kernel32.SetConsoleOutputCP.argtypes = [wintypes.UINT]
+kernel32.SetConsoleOutputCP.restype = wintypes.BOOL
 
 kernel32.ReadConsoleInputW.argtypes = [
     wintypes.HANDLE, ctypes.POINTER(INPUT_RECORD),
@@ -1333,6 +1343,15 @@ def get_console_screen_buffer_info(handle: int) -> tuple[int, int]:
     cols = info.srWindow.Right - info.srWindow.Left + 1
     rows = info.srWindow.Bottom - info.srWindow.Top + 1
     return cols, rows
+
+
+def get_console_output_cp() -> int:
+    return kernel32.GetConsoleOutputCP()
+
+
+def set_console_output_cp(codepage: int) -> None:
+    if not kernel32.SetConsoleOutputCP(codepage):
+        raise ctypes.WinError(ctypes.get_last_error())
 
 
 def read_console_input(handle: int, max_records: int = 32) -> list[INPUT_RECORD]:

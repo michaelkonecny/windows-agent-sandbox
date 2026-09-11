@@ -89,3 +89,16 @@ def test_console_mode_rejects_non_console_handle():
     finally:
         winapi.close_handle(read_handle)
         winapi.close_handle(write_handle)
+
+
+def test_console_output_codepage_roundtrip():
+    """A pseudoconsole always emits UTF-8, so the CLI switches the console
+    to it for the session and must put the old one back."""
+    original = winapi.get_console_output_cp()
+    assert isinstance(original, int) and original > 0
+    try:
+        winapi.set_console_output_cp(winapi.CP_UTF8)
+        assert winapi.get_console_output_cp() == winapi.CP_UTF8
+    finally:
+        winapi.set_console_output_cp(original)
+    assert winapi.get_console_output_cp() == original

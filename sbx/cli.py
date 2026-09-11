@@ -34,6 +34,14 @@ def _terminal_size() -> tuple[int, int]:
         winapi.close_handle(conout)
 
 
+def _restore(action) -> None:
+    """Undo one piece of console state, without masking the others."""
+    try:
+        action()
+    except OSError as e:
+        log.warning("failed to restore console state: %s", e)
+
+
 @contextmanager
 def _vt_console():
     """Put the real console into VT mode for the duration of a session.
@@ -56,9 +64,19 @@ def _vt_console():
         winapi.close_handle(conin)
         raise
 
-    in_mode = winapi.get_console_mode(conin)
-    out_mode = winapi.get_console_mode(conout)
     try:
+        in_mode = winapi.get_console_mode(conin)
+        out_mode = winapi.get_console_mode(conout)
+        original_cp = winapi.get_console_output_cp()
+    except OSError:
+        winapi.close_handle(conin)
+        winapi.close_handle(conout)
+        raise
+
+    try:
+        # The sandbox's output is UTF-8; a console left on its default
+        # OEM codepage would render every non-ASCII byte as mojibake.
+        winapi.set_console_output_cp(winapi.CP_UTF8)
         # No ENABLE_PROCESSED_INPUT: Ctrl+C must reach the sandbox as a
         # byte rather than raising a control event in this process.
         try:
@@ -74,13 +92,15 @@ def _vt_console():
         )
         yield conin, conout
     finally:
-        # Restoring the modes is the part that matters.  conin is left
-        # open on purpose: the input pump is parked in a blocking
+        # Undo each piece independently — one failure must not leave the
+        # rest of the terminal half-configured.  conin is left open on
+        # purpose: the input pump is parked in a blocking
         # ReadConsoleInput on it, and CloseHandle waits for that pending
-        # read to finish — which hangs the session instead of ending it.
+        # read to finish, which hangs the session instead of ending it.
         # Process exit releases the handle.
-        winapi.set_console_mode(conin, in_mode)
-        winapi.set_console_mode(conout, out_mode)
+        _restore(lambda: winapi.set_console_mode(conin, in_mode))
+        _restore(lambda: winapi.set_console_mode(conout, out_mode))
+        _restore(lambda: winapi.set_console_output_cp(original_cp))
         winapi.close_handle(conout)
 
 
