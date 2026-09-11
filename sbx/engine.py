@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -19,7 +20,12 @@ from sbx.elevation import run_elevated
 from sbx.errors import SandboxError
 from sbx.identity import generate_sid
 from sbx.mounts import MountSpec
-from sbx.process import SHELL_EXECUTABLES, StartHandle, resolve_shell
+from sbx.process import (
+    SHELL_EXECUTABLES,
+    StartHandle,
+    resolve_shell,
+    sandbox_is_running,
+)
 from sbx.store import SandboxRecord, SandboxState, Store
 
 log = logging.getLogger(__name__)
@@ -202,8 +208,26 @@ class Engine:
         run_elevated("uninstall_cleanup")
         log.info("uninstalled sbx")
 
+    def _live_state(self, record: SandboxRecord) -> SandboxState:
+        """What the sandbox's state actually is.
+
+        The store holds what the engine last did, and a sandbox can end
+        without telling it — the user types `exit`, or the shell dies — so
+        a stored "running" outlives the sandbox. The Job Object exists
+        exactly while the runner does, which makes it the truth. Only
+        "running" can go stale this way; "created" and "stopped" cannot.
+        """
+        if record.state == SandboxState.running and not sandbox_is_running(
+            record.name
+        ):
+            return SandboxState.stopped
+        return record.state
+
     def list(self) -> list[SandboxRecord]:
-        return self.store.list()
+        return [
+            replace(record, state=self._live_state(record))
+            for record in self.store.list()
+        ]
 
     def status(self, project_path: str | Path) -> dict:
         project_path = Path(project_path).resolve()
@@ -211,14 +235,17 @@ class Engine:
         if record is None:
             raise SandboxError(f"no sandbox for {project_path}")
 
+        state = self._live_state(record)
         result = {
             "name": record.name,
-            "state": record.state.value,
+            "state": state.value,
             "sid": record.synthetic_sid,
             "project_path": str(record.project_path),
             "config_path": str(record.config_path),
             "created_at": record.created_at.isoformat(),
         }
-        if record.state == SandboxState.running:
+        if state == SandboxState.running:
+            # Stale PIDs are worse than none: they may name some unrelated
+            # process that has since reused the number.
             result["pids"] = record.pids
         return result

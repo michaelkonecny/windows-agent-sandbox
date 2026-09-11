@@ -129,6 +129,17 @@ def destroy(
 
     if info:
         still_in_use = _sources_used_by_others(sandbox_name, meta_root)
+        # Resolved once, and tolerantly: the account may already be gone
+        # (an uninstall, or a half-finished one), and teardown has to
+        # finish regardless — otherwise bind links and the metadata file
+        # outlive the sandbox.
+        try:
+            shared_sid = _sandbox_user_sid(user_sid)
+        except OSError as e:
+            log.warning("cannot resolve %s, leaving its ACEs: %s",
+                        SANDBOX_USER, e)
+            shared_sid = None
+
         for entry in info:
             target_path = ws / entry["target"]
             try:
@@ -137,8 +148,9 @@ def destroy(
                 log.warning("failed to remove bind link %s: %s", target_path, e)
 
             revoke = [entry["sandbox_sid"]]
-            if entry["source"] not in still_in_use:
-                revoke.append(_sandbox_user_sid(user_sid))
+            if _normalise(entry["source"]) not in still_in_use:
+                if shared_sid:
+                    revoke.append(shared_sid)
             else:
                 log.info(
                     "keeping %s access to %s — another sandbox mounts it",
@@ -195,6 +207,17 @@ def _sandbox_user_sid(user_sid: str | None = None) -> str:
     return user_sid or winapi.lookup_account_sid(SANDBOX_USER)
 
 
+def _normalise(source: str) -> str:
+    """A comparable spelling of a backing path.
+
+    Windows paths are case-insensitive and admit several spellings of the
+    same directory. Comparing them raw would miss a match and revoke the
+    shared ACE out from under another sandbox, which would silently cost
+    it access to its own mount.
+    """
+    return os.path.normcase(os.path.abspath(source))
+
+
 def _sources_used_by_others(
     sandbox_name: str, meta_root: Path | None = None
 ) -> set[str]:
@@ -215,7 +238,7 @@ def _sources_used_by_others(
             entries = json.loads(meta.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        sources.update(entry["source"] for entry in entries)
+        sources.update(_normalise(entry["source"]) for entry in entries)
     return sources
 
 

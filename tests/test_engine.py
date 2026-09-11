@@ -145,7 +145,10 @@ def test_status_running(engine, config_path, tmp_project):
 
     engine.store.update(tmp_project, state=SandboxState.running, pids=[1234, 5678])
 
-    info = engine.status(tmp_project)
+    # status checks the Job Object rather than trusting the store, since a
+    # sandbox can end without the engine hearing about it.
+    with mock.patch("sbx.engine.sandbox_is_running", return_value=True):
+        info = engine.status(tmp_project)
     assert info["state"] == "running"
     assert info["pids"] == [1234, 5678]
 

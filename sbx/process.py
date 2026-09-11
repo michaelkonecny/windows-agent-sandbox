@@ -20,6 +20,9 @@ JOB_PREFIX = r"Global\sbx-job-"
 
 RELAY_BUF = 4096
 
+# How long the host waits for the runner to connect to both named pipes.
+CONNECT_TIMEOUT = 15
+
 # Terminal size used when the caller gives none and the host has no
 # console to measure (a redirected or non-interactive invocation).
 DEFAULT_SIZE = (120, 30)
@@ -133,9 +136,19 @@ class StartHandle:
     job_name: str
 
     def close(self) -> None:
+        """Release the handles. Safe to call twice.
+
+        The CLI closes the handle when its session ends while the engine
+        still holds the same object and closes it again on stop; without
+        zeroing, the second pass would close handle numbers Windows has
+        since handed to something else.
+        """
         winapi.close_handle(self.runner_process)
         winapi.close_handle(self.pipe_in)
         winapi.close_handle(self.pipe_out)
+        self.runner_process = 0
+        self.pipe_in = 0
+        self.pipe_out = 0
 
 
 def start_sandbox(
@@ -217,21 +230,35 @@ def start_sandbox(
         except OSError as e:
             connect_errors.append(f"{name}: {e}")
 
-    t_in = threading.Thread(target=_connect_with_timeout, args=(pipe_in, "in"))
-    t_out = threading.Thread(target=_connect_with_timeout, args=(pipe_out, "out"))
+    # Daemons: we reach the failure path precisely when one of these is
+    # still parked in ConnectNamedPipe, and a live non-daemon thread
+    # would hold up interpreter shutdown instead of letting the error out.
+    t_in = threading.Thread(
+        target=_connect_with_timeout, args=(pipe_in, "in"), daemon=True
+    )
+    t_out = threading.Thread(
+        target=_connect_with_timeout, args=(pipe_out, "out"), daemon=True
+    )
     t_in.start()
     t_out.start()
 
-    t_in.join(timeout=15)
-    t_out.join(timeout=15)
+    t_in.join(timeout=CONNECT_TIMEOUT)
+    t_out.join(timeout=CONNECT_TIMEOUT)
 
     if t_in.is_alive() or t_out.is_alive() or connect_errors:
+        # Kill the runner rather than just dropping our handle to it. It
+        # owns the kill-on-close Job Object, so an orphan keeps the
+        # sandbox looking alive and every later start is refused as
+        # "already running" with no way back except sbx stop.
+        winapi.terminate_process(proc_h)
         winapi.close_handle(proc_h)
         winapi.close_handle(pipe_in)
         winapi.close_handle(pipe_out)
         if connect_errors:
             raise ProcessError(f"pipe connect failed: {connect_errors}")
-        raise ProcessError("runner did not connect to pipes within 15s")
+        raise ProcessError(
+            f"runner did not connect to pipes within {CONNECT_TIMEOUT}s"
+        )
 
     log.info("runner connected, pid=%d", pid)
     return StartHandle(
