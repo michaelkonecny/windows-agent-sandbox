@@ -79,9 +79,25 @@ day they start working.
   so this is ConPTY, not the relay.
 - The spec's Ctrl+C edge case ("ConPTY delivers it as `CTRL_C_EVENT` to the
   shell process") is wrong as written. Left unchanged pending a decision.
-- Option, not implemented because it is new design: have the runner watch
-  its input stream for `0x03` and call `GenerateConsoleCtrlEvent` on the
-  shell's process group.
+
+Three mechanisms tried and eliminated, so nobody repeats them:
+
+1. Write `0x03` to the pseudoconsole's input pipe. Ignored — the byte
+   reaches the shell as data, `ping -t` keeps running.
+2. Borrow the console from a short-lived helper: `FreeConsole`,
+   `AttachConsole(shell_pid)`, `GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0)`.
+   `AttachConsole` succeeds and `GenerateConsoleCtrlEvent` reports success,
+   yet the command keeps running.
+3. Suspect `ENABLE_PROCESSED_INPUT` was off on the pseudoconsole's input
+   buffer, since that is the flag that turns `0x03` into a control event.
+   Read from inside the console it is already set — mode `0x01e7` — so
+   this was never the cause.
+
+What is left is the ConPTY signal pipe, the channel conhost is started
+with (visible as `--signal 0x...` on its command line) and which
+`ResizePseudoConsole` uses. Its protocol is undocumented and exposes no
+Ctrl+C packet through the public API, so any fix here is either a private
+protocol or a different design.
 
 ### A mount is not readable from inside its own sandbox — fixed
 

@@ -200,8 +200,11 @@ def test_stop_from_outside_ends_the_session(sandbox):
     reason="ConPTY does not turn an 0x03 byte on its input pipe into a "
            "CTRL_C_EVENT for the attached client, so the running command "
            "is not interrupted. Reproduced with no sandbox involved: a "
-           "bare ConPtyShell writing 0x03 leaves `ping -t` running. The "
-           "spec's Ctrl+C edge case assumes otherwise; see specs/notes-2.md.",
+           "bare ConPtyShell writing 0x03 leaves `ping -t` running, and "
+           "neither borrowing the console to call GenerateConsoleCtrlEvent "
+           "nor forcing ENABLE_PROCESSED_INPUT (already set) changes it. "
+           "The spec's Ctrl+C edge case assumes otherwise; the eliminated "
+           "mechanisms are listed in specs/notes-2.md.",
     strict=True,
 )
 def test_ctrl_c_interrupts_the_sandbox_command(sandbox):
