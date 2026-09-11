@@ -329,6 +329,50 @@ def test_one_sandbox_cannot_read_anothers_mount(sandbox):
         teardown_sandbox(other)
 
 
+def test_host_changes_show_up_in_the_mount(sandbox):
+    """A bind link redirects rather than copies, so a file the host writes
+    after the sandbox started is visible immediately."""
+    with host_terminal() as term:
+        enter_sandbox(term, sandbox)
+
+        (sandbox / "work" / "late.txt").write_text("WRITTEN_AFTER_START")
+        term.send_line(rf"type {sandbox_mount(sandbox)}\work\late.txt")
+        term.expect(r"WRITTEN_AFTER_START", timeout=STEP_TIMEOUT)
+
+
+def test_system_paths_are_readable(sandbox):
+    """The restriction is not blanket: BUILTIN\\Users is in the token's
+    restricted SIDs, so the tools the agent needs stay reachable."""
+    with host_terminal() as term:
+        enter_sandbox(term, sandbox)
+        term.send_line(r"type C:\Windows\System32\drivers\etc\hosts")
+        term.expect(r"(?i)localhost|# Copyright", timeout=STEP_TIMEOUT)
+
+
+@pytest.mark.xfail(
+    reason="System paths are reachable through BUILTIN\\Users, which sits "
+           "in every restricted token, so the sandbox inherits whatever "
+           "that group may do — and Users has write on C:\\Windows\\Temp by "
+           "default. The spec calls system-path access read-only; it is "
+           "not enforced, and any location Users can write is a channel "
+           "between sandboxes. See specs/notes-2.md.",
+    strict=True,
+)
+def test_system_paths_are_not_writable(sandbox):
+    """The spec grants system paths read-only, so writing under
+    C:\\Windows must fail even where the sandbox can read."""
+    probe = Path(r"C:\Windows\Temp\sbx-probe.txt")
+    probe.unlink(missing_ok=True)
+    try:
+        with host_terminal() as term:
+            enter_sandbox(term, sandbox)
+            term.send_line(rf"echo nope> {probe}")
+            term.expect(r"(?i)denied", timeout=STEP_TIMEOUT)
+        assert not probe.exists()
+    finally:
+        probe.unlink(missing_ok=True)
+
+
 def test_paths_outside_any_mount_are_denied(sandbox):
     """The sandbox user's own home is outside every mount, so the fully
     restricted token refuses it even though the account owns it — nothing
@@ -496,6 +540,27 @@ def test_double_start_is_refused(sandbox):
             second.send_line(sbx("start", str(sandbox)))
             second.expect(r"(?i)error|already|in use|traceback",
                           timeout=PROMPT_TIMEOUT)
+
+
+def test_two_sandboxes_run_at_once(sandbox):
+    """Concurrent sandboxes must not collide: each gets its own named
+    pipes, its own Job Object and its own restricted token."""
+    other = make_project()
+    create_sandbox(other)
+    try:
+        with host_terminal() as first, host_terminal() as second:
+            enter_sandbox(first, sandbox)
+            enter_sandbox(second, other)
+
+            first.send_line("echo FIRST=%username%")
+            first.expect(r"FIRST=sbx-user", timeout=STEP_TIMEOUT)
+            second.send_line("echo SECOND=%username%")
+            second.expect(r"SECOND=sbx-user", timeout=STEP_TIMEOUT)
+
+            assert sandbox_job_pids(sandbox.name)
+            assert sandbox_job_pids(other.name)
+    finally:
+        teardown_sandbox(other)
 
 
 def test_full_round_trip():

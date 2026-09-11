@@ -111,6 +111,22 @@ Left here for the record; the fix is described under AFK decisions below.
   `sbx-user` — anything under the host user's profile, `%TEMP%` included —
   failed the first.
 
+### System paths are not read-only — found, not fixed
+
+- Symptom: `echo nope> C:\Windows\Temp\sbx-probe.txt` succeeds from inside
+  a sandbox. Kept as a strict xfail asserting the spec's intent.
+- Cause: system access comes from `BUILTIN\Users` being in every
+  restricted token, so a sandbox inherits exactly what that group may do.
+  `Users` has write on `C:\Windows\Temp` by default.
+- Two consequences. The spec's "system paths read-only" is intent, not
+  something enforced. And any location `Users` can write — `C:\Windows\Temp`,
+  `C:\Users\Public` — is a channel between sandboxes, which undercuts the
+  isolation the synthetic SID provides on mounts.
+- Not fixed because the fix is the design the PoCs explicitly replaced: a
+  shared system SID with explicit read-only ACEs on each system path.
+  Reinstating it is a real decision about the filesystem mechanism, and a
+  sandbox does need *somewhere* writable for temp files.
+
 ## Also worth knowing
 
 - The sandbox shell inherits the host process's environment. `PROMPT` set
@@ -205,6 +221,8 @@ so each is revertible on its own.
 - Decide what to do about git-bash sandboxes sharing mount access (see
   AFK decisions above) — this is the one with security consequences.
 - Decide whether the sandbox shell should inherit the host environment.
+- Decide whether system paths should be genuinely read-only, and where a
+  sandbox is then allowed to write temp files.
 - Implement the network system tests once the proxy and WFP rules are
   verified; scenarios are listed in `specs/tests/system.md`.
 - Implement the remaining privilege scenarios (taskkill against a host

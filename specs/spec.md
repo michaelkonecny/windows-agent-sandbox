@@ -178,6 +178,8 @@ The restricted token's `RestrictedSids` list contains `[per_sandbox_sid, BUILTIN
 
 No shared synthetic SID or extra system path ACLs are needed — `BUILTIN\Users` in RestrictedSids is sufficient.
 
+That also fixes what system access means: a sandbox inherits exactly what `Users` may do on a path, not a read-only subset. Where `Users` has write, so does the sandbox — `C:\Windows\Temp` is writable today, verified. So system access is not read-only, and any location `Users` can write is a channel between sandboxes. Making it genuinely read-only would need a shared system SID with explicit read-only ACEs, the design these PoC findings replaced; that trade-off is now an open question rather than a settled one.
+
 #### Mount setup
 
 - Mount targets appear as bind links inside the sandbox user's home directory, under a per-sandbox subdirectory (`C:\Users\sbx-user\<sandbox-name>\`).
