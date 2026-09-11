@@ -252,6 +252,33 @@ and `api.anthropic.com.` — the same host, fully qualified — did not match.
 Normalisation drops exactly one trailing dot, so stranger input still
 fails to match and is denied.
 
+### The elevation channel
+
+`run_elevated` hands the elevated helper a temp file naming the privileged
+operation to run, and gets a result file back. Two things about that
+channel, stated at the severity they actually deserve:
+
+- It used `tempfile.mktemp`, which returns a name without creating the
+  file — deprecated precisely because another process can occupy the path
+  in the gap before you write it. Whoever controls the args file controls
+  which operation runs as administrator, so the gap is worth closing.
+  Calibration: not practically exploitable as it stood, because the name
+  is 8 random characters rather than predictable, and only same-user
+  processes can write that directory. A latent weakness, not an open
+  door. Fixed anyway — `mkstemp` creates with `O_EXCL` and the change
+  costs nothing.
+
+- `setup_test_env` returns the sandbox account password, and `execute`
+  writes the result as plain JSON to that temp file. So the credential
+  the rest of `identity.py` carefully DPAPI-encrypts first travels
+  unencrypted through the filesystem, and lingers until the sectors are
+  reused. Same-user-readable only, so not a privilege boundary crossing.
+  Not fixed, because the obvious fix does not work: DPAPI is per-user and
+  the helper runs as the elevated account, so a credential it encrypted
+  would not decrypt for the host user. Changing this means changing the
+  protocol — returning a handle, or having the caller generate the
+  password and pass it in — which is a design decision.
+
 ### Not contradictions, just unbuilt
 
 The TUI and custom domain allowlists. Both are in Follow-ups.
@@ -367,6 +394,10 @@ Decisions, roughly by how much they cost to get wrong:
 - Decide how Ctrl+C should reach the sandbox shell, given ConPTY will not
   carry it and three mechanisms are already ruled out.
 - Decide whether the sandbox shell should inherit the host environment.
+- Decide how the sandbox account password should reach the caller from
+  the elevated helper without going through a plaintext temp file. DPAPI
+  cannot be used on the helper's side, since it is per-user and the
+  helper runs elevated.
 
 Work, no decision needed:
 

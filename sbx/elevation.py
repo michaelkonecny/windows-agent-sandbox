@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -22,11 +23,25 @@ def register(name: str):
     return decorator
 
 
+def _exclusive_temp_file(suffix: str) -> Path:
+    """Create an empty temp file that is ours and did not exist before.
+
+    mkstemp opens with O_EXCL, so unlike mktemp there is no window between
+    choosing the name and creating it for another process to plant
+    something there. Worth the care here: the elevated helper performs
+    whichever privileged operation the args file names, so whoever
+    controls that file controls what runs as administrator.
+    """
+    handle, name = tempfile.mkstemp(suffix=suffix, prefix="sbx-elevate-")
+    os.close(handle)
+    return Path(name)
+
+
 def run_elevated(operation: str, args: dict | None = None) -> dict:
     args = args or {}
 
-    args_path = Path(tempfile.mktemp(suffix=".json"))
-    result_path = Path(tempfile.mktemp(suffix=".json"))
+    args_path = _exclusive_temp_file(".json")
+    result_path = _exclusive_temp_file(".json")
 
     try:
         args_path.write_text(
