@@ -211,6 +211,47 @@ egress. Not fixed here: wiring it up means installing machine-wide
 firewall rules, which is not something to switch on unattended. It is the
 one gap that makes a spec guarantee untrue rather than merely unbuilt.
 
+### The proxy never inspects the SNI
+
+The spec says twice that the proxy filters "via TLS SNI inspection", and
+the Definitions explain SNI as the thing it reads to enforce the
+allowlist without decrypting. It does not. `_handle_proxy` decides on the
+`CONNECT` host and then tunnels; `parse_sni` has no caller outside its own
+test.
+
+What that costs: a client can `CONNECT api.anthropic.com:443`, pass the
+check, and then present any name it likes in the ClientHello. Where both
+names sit behind one CDN the request reaches the other host — domain
+fronting, which is exactly what SNI inspection is for. Deciding on a
+header the client also controls is weaker than the spec claims.
+
+It matters more than it would have, because the WFP backstop is missing
+too: the `CONNECT` check is currently the only thing enforcing network
+policy at all.
+
+Not wired up here. Reading the ClientHello and dropping connections whose
+SNI disagrees changes what traffic is allowed, and getting it subtly
+wrong either breaks every agent's network or leaves a false sense of
+protection — a decision to take deliberately, not unattended.
+
+What I did do is make `parse_sni` trustworthy for whoever wires it in,
+since it was carrying bugs that only matter once it is load-bearing:
+
+- A name declared longer than the buffer came back **truncated** rather
+  than rejected. That is the dangerous shape: `api.anthropic.com.evil.test`
+  cut short reads as an allowed host, so the allowlist would be asked
+  about a domain nobody sent.
+- Malformed input raised `IndexError`, and a non-ASCII name raised
+  `UnicodeDecodeError`, out of a function whose whole job is parsing a
+  stranger's first packet.
+- Every length field is now bounds-checked against what actually arrived.
+
+And two in `is_domain_allowed`, both false denials rather than bypasses:
+hostnames were compared case-sensitively though DNS is case-insensitive,
+and `api.anthropic.com.` — the same host, fully qualified — did not match.
+Normalisation drops exactly one trailing dot, so stranger input still
+fails to match and is denied.
+
 ### Not contradictions, just unbuilt
 
 The TUI and custom domain allowlists. Both are in Follow-ups.
@@ -332,6 +373,10 @@ Work, no decision needed:
 - Wire WFP rule installation into `sbx install`. Layer 1 of the network
   design does not exist at runtime until this lands, so a sandbox that
   ignores `HTTPS_PROXY` currently has unrestricted egress.
+- Decide whether the proxy should enforce on the SNI as the spec says,
+  rather than on the `CONNECT` host the client also controls. `parse_sni`
+  is ready and tested; only the policy decision and the data-path change
+  are outstanding.
 - Write the network system tests once WFP and the proxy are verified;
   the scenarios are already in `specs/tests/system.md`.
 - Address sandboxes by their `--name` alias, not only by project path.

@@ -30,60 +30,111 @@ class NetworkPolicy:
     allowed_domains: list[str] | None = None
 
 
+def normalise_host(host: str) -> str:
+    """Fold a hostname to the form the allowlist is compared in.
+
+    DNS is case-insensitive, and `example.com.` names the same host as
+    `example.com`. Exactly one trailing dot is dropped: anything stranger
+    is left alone, so it fails to match and is denied, which is the safe
+    direction to err in.
+    """
+    host = host.lower()
+    if host.endswith("."):
+        host = host[:-1]
+    return host
+
+
 def is_domain_allowed(domain: str, policy: NetworkPolicy) -> bool:
     if policy.preset == NetworkPreset.all:
         return True
     if policy.preset == NetworkPreset.none:
         return False
-    domains = policy.allowed_domains or ANTHROPIC_DOMAINS
-    return any(domain == d or domain.endswith("." + d) for d in domains)
+
+    candidate = normalise_host(domain)
+    if not candidate:
+        return False
+    allowed = (normalise_host(d) for d in (
+        policy.allowed_domains or ANTHROPIC_DOMAINS
+    ))
+    # The leading dot matters: a bare suffix test would let
+    # evil-anthropic.com through.
+    return any(
+        candidate == d or candidate.endswith("." + d) for d in allowed if d
+    )
 
 
 def parse_sni(data: bytes) -> str | None:
-    """Extract SNI hostname from a TLS ClientHello message."""
-    if len(data) < 5 or data[0] != 0x16:
+    """Extract the SNI hostname from a TLS ClientHello.
+
+    Every length in the message is attacker-controlled, so each read is
+    bounds-checked against what actually arrived. A name declared longer
+    than the buffer is rejected rather than truncated: a short read of
+    `api.anthropic.com.evil.test` would otherwise come back as an allowed
+    host, and the allowlist would be asked about a domain nobody sent.
+
+    Returns None for anything it cannot parse, and never raises — the
+    input is a stranger's first packet.
+    """
+    if len(data) < 5 or data[0] != 0x16:  # not a TLS handshake record
         return None
+
     pos = 5
-    if pos >= len(data) or data[pos] != 0x01:
+    if pos >= len(data) or data[pos] != 0x01:  # not a ClientHello
         return None
-    pos += 4
-    pos += 34
+    pos += 4          # handshake type and its 3-byte length
+    pos += 2 + 32     # client version and random
+
     if pos >= len(data):
         return None
-    session_len = data[pos]
-    pos += 1 + session_len
+    pos += 1 + data[pos]                                   # session id
+
     if pos + 2 > len(data):
         return None
-    cipher_len = int.from_bytes(data[pos:pos + 2], "big")
-    pos += 2 + cipher_len
+    pos += 2 + int.from_bytes(data[pos:pos + 2], "big")    # cipher suites
+
     if pos >= len(data):
         return None
-    comp_len = data[pos]
-    pos += 1 + comp_len
+    pos += 1 + data[pos]                                   # compression
+
     if pos + 2 > len(data):
         return None
     ext_total = int.from_bytes(data[pos:pos + 2], "big")
     pos += 2
-    ext_end = pos + ext_total
+    ext_end = min(pos + ext_total, len(data))
+
     while pos + 4 <= ext_end:
         ext_type = int.from_bytes(data[pos:pos + 2], "big")
         ext_len = int.from_bytes(data[pos + 2:pos + 4], "big")
         pos += 4
         if ext_type == 0x0000:
-            if pos + 2 > ext_end:
-                return None
-            sni_pos = pos + 2
-            sni_list_len = int.from_bytes(data[pos:pos + 2], "big")
-            sni_end = pos + 2 + sni_list_len
-            while sni_pos + 3 <= sni_end:
-                name_type = data[sni_pos]
-                name_len = int.from_bytes(data[sni_pos + 1:sni_pos + 3], "big")
-                sni_pos += 3
-                if name_type == 0x00:
-                    return data[sni_pos:sni_pos + name_len].decode("ascii")
-                sni_pos += name_len
-            return None
+            return _parse_server_name_extension(
+                data, pos, min(pos + ext_len, ext_end)
+            )
         pos += ext_len
+    return None
+
+
+def _parse_server_name_extension(
+    data: bytes, pos: int, end: int
+) -> str | None:
+    if pos + 2 > end:
+        return None
+    list_len = int.from_bytes(data[pos:pos + 2], "big")
+    pos += 2
+    end = min(pos + list_len, end)
+
+    while pos + 3 <= end:
+        name_type = data[pos]
+        name_len = int.from_bytes(data[pos + 1:pos + 3], "big")
+        pos += 3
+        if pos + name_len > end:
+            return None  # declared longer than what is here
+        if name_type == 0x00:
+            try:
+                return data[pos:pos + name_len].decode("ascii")
+            except UnicodeDecodeError:
+                return None
+        pos += name_len
     return None
 
 

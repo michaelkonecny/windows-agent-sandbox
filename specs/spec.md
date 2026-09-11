@@ -197,6 +197,8 @@ Single user, WFP backstop, proxy-based policy. Fail-safe by design — three lay
 
 1. WFP — static rules scoped to `sbx-user`'s SID block all egress except loopback to the proxy port. Always on, never changes per sandbox. This is the backstop — if the proxy is down or the agent ignores `HTTPS_PROXY`, traffic is blocked.
 2. Proxy — a local proxy on loopback that enforces per-sandbox domain filtering via TLS SNI inspection. Defaults to deny-all when no policy is configured.
+
+   Not what it does yet: the proxy decides on the `CONNECT` host and never inspects the SNI, so a client that connects to an allowed host and then presents a different name in its ClientHello is not caught. `parse_sni` exists and is tested but has no caller in the request path. That matters more while the WFP layer is also missing — see Follow-ups.
 3. Environment — `HTTPS_PROXY` env var set in the sandbox process, pointing to the proxy.
 
 #### Per preset
