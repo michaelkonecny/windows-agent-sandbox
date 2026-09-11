@@ -279,6 +279,18 @@ channel, stated at the severity they actually deserve:
   protocol — returning a handle, or having the caller generate the
   password and pass it in — which is a design decision.
 
+### The registry read as empty when damaged
+
+Mutations were locked; reads were not, and both fell back to an empty
+dict on any parse failure. So a read catching a mutation mid-write
+reported no sandboxes — a one-byte prefix was enough, `{` alone parsed as
+empty — and a genuinely corrupt registry was silently discarded.
+
+The second is the costly one. Bind links, ACLs and workspaces are all
+found through the registry, so forgetting it leaves every one of them in
+place with nothing that knows to remove them. Reads take the lock now,
+and damaged content raises instead of masquerading as an empty store.
+
 ### Not contradictions, just unbuilt
 
 The TUI and custom domain allowlists. Both are in Follow-ups.
