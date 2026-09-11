@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -16,6 +17,27 @@ log = logging.getLogger(__name__)
 
 PIPE_PREFIX = r"\\.\pipe\sbx-"
 JOB_PREFIX = r"Global\sbx-job-"
+
+RELAY_BUF = 4096
+
+# Terminal size used when the caller gives none and the host has no
+# console to measure (a redirected or non-interactive invocation).
+DEFAULT_SIZE = (120, 30)
+
+# Resize requests travel in band on the input pipe as a private-use OSC
+# sequence, which avoids a third pipe and its connection handshake.  9999
+# is unregistered, so it cannot collide with a real terminal escape.
+RESIZE_OSC = re.compile(rb"\x1b\]9999;(\d+);(\d+)\x07")
+
+
+def host_terminal_size() -> tuple[int, int]:
+    """The host console's visible size, or DEFAULT_SIZE if there is none."""
+    try:
+        return winapi.get_console_screen_buffer_info(
+            winapi.get_std_handle(winapi.STD_OUTPUT_HANDLE)
+        )
+    except OSError:
+        return DEFAULT_SIZE
 
 SHELL_EXECUTABLES = {
     ShellKind.cmd: "cmd.exe",
@@ -62,9 +84,15 @@ def resolve_shell(shell: ShellKind) -> str:
     raise ProcessError(f"shell not found: {shell.value}")
 
 
-def _runner_cmd(sandbox_name: str, sandbox_sid: str, shell_path: str) -> str:
+def _runner_cmd(
+    sandbox_name: str, sandbox_sid: str, shell_path: str,
+    cols: int, rows: int,
+) -> str:
     python = sys.executable
-    return f'"{python}" -m sbx _run {sandbox_name} {sandbox_sid} "{shell_path}"'
+    return (
+        f'"{python}" -m sbx _run {sandbox_name} {sandbox_sid} '
+        f'"{shell_path}" {cols} {rows}'
+    )
 
 
 def build_env(
@@ -105,7 +133,14 @@ def start_sandbox(
     network_preset: NetworkPreset = NetworkPreset.none,
     proxy_port: int | None = None,
     credentials_path: Path | None = None,
+    cols: int | None = None,
+    rows: int | None = None,
 ) -> StartHandle:
+    if cols is None or rows is None:
+        host_cols, host_rows = host_terminal_size()
+        cols = cols or host_cols
+        rows = rows or host_rows
+
     if isinstance(shell, ShellKind):
         shell_path = resolve_shell(shell)
     else:
@@ -127,7 +162,7 @@ def start_sandbox(
     env["USERNAME"] = username
     env_block = winapi.make_env_block(env)
 
-    cmd = _runner_cmd(sandbox_name, sandbox_sid, shell_path)
+    cmd = _runner_cmd(sandbox_name, sandbox_sid, shell_path, cols, rows)
     log.info("launching runner: %s", cmd)
 
     try:
@@ -196,7 +231,10 @@ def stop_sandbox(sandbox_name: str) -> None:
     log.info("terminated sandbox %s", sandbox_name)
 
 
-def execute_runner(sandbox_name: str, sandbox_sid: str, shell_path: str) -> None:
+def execute_runner(
+    sandbox_name: str, sandbox_sid: str, shell_path: str,
+    cols: int = DEFAULT_SIZE[0], rows: int = DEFAULT_SIZE[1],
+) -> None:
     import ctypes
     SEM_FAILCRITICALERRORS = 0x0001
     SEM_NOGPFAULTERRORBOX = 0x0002
@@ -218,7 +256,9 @@ def execute_runner(sandbox_name: str, sandbox_sid: str, shell_path: str) -> None
                 pass
 
     try:
-        _execute_runner_inner(sandbox_name, sandbox_sid, shell_path, _log)
+        _execute_runner_inner(
+            sandbox_name, sandbox_sid, shell_path, cols, rows, _log
+        )
     except Exception:
         import traceback
         _log(traceback.format_exc())
@@ -228,31 +268,94 @@ def execute_runner(sandbox_name: str, sandbox_sid: str, shell_path: str) -> None
             _log_file.close()
 
 
-def _relay(src: int, dst: int, _log, label: str, stop_event) -> None:
-    """Relay data from src pipe to dst pipe until stop_event is set."""
-    buf_size = 4096
-    while not stop_event.is_set():
+def split_resize_requests(
+    data: bytes,
+) -> tuple[bytes, list[tuple[int, int]], bytes]:
+    """Pull resize requests out of a host-to-shell byte stream.
+
+    Returns (payload, resizes, held).  payload is what the shell should
+    see, resizes are the (cols, rows) pairs found in order, and held is a
+    trailing fragment that could still grow into a resize sequence and so
+    must wait for the next read.  Without holding it back, a sequence
+    split across two reads would reach the shell as garbage.
+    """
+    payload = bytearray()
+    resizes: list[tuple[int, int]] = []
+    pos = 0
+    for match in RESIZE_OSC.finditer(data):
+        payload += data[pos:match.start()]
+        resizes.append((int(match.group(1)), int(match.group(2))))
+        pos = match.end()
+
+    rest = data[pos:]
+    # An OSC introducer with no terminator yet may be a split sequence.
+    start = rest.rfind(b"\x1b]")
+    if start != -1 and b"\x07" not in rest[start:]:
+        return bytes(payload + rest[:start]), resizes, bytes(rest[start:])
+    return bytes(payload + rest), resizes, b""
+
+
+def _relay_output(src: int, dst: int, _log) -> None:
+    """ConPTY to host.  Blocking reads — no polling.
+
+    Ends when either pipe breaks: the ConPTY side closes when the shell
+    exits, the host side when the user's session goes away.
+    """
+    total = 0
+    while True:
         try:
-            avail = winapi.peek_pipe(src)
-        except OSError:
-            break
-        if avail > 0:
+            data = winapi.read_file(src, RELAY_BUF)
+        except OSError as e:
+            _log(f"output relay ended after {total} bytes: {e}")
+            return
+        if not data:
+            _log(f"output relay saw end of stream after {total} bytes")
+            return
+        try:
+            winapi.write_file(dst, data)
+        except OSError as e:
+            _log(f"output relay write ended after {total} bytes: {e}")
+            return
+        total += len(data)
+
+
+def _relay_input(src: int, dst: int, hpc: int, _log) -> None:
+    """Host to ConPTY, applying resize requests found in the stream."""
+    held = b""
+    while True:
+        try:
+            data = winapi.read_file(src, RELAY_BUF)
+        except OSError as e:
+            _log(f"input relay ended: {e}")
+            return
+        if not data:
+            return
+
+        payload, resizes, held = split_resize_requests(held + data)
+        for cols, rows in resizes:
+            _log(f"resizing pseudoconsole to {cols}x{rows}")
             try:
-                data = winapi.read_file(src, min(avail, buf_size))
-                winapi.write_file(dst, data)
-            except OSError:
-                break
-        else:
-            stop_event.wait(0.01)
+                winapi.resize_pseudo_console(hpc, cols, rows)
+            except OSError as e:
+                _log(f"resize failed: {e}")
+        if not payload:
+            continue
+        try:
+            winapi.write_file(dst, payload)
+        except OSError as e:
+            _log(f"input relay write ended: {e}")
+            return
 
 
 def _execute_runner_inner(
     sandbox_name: str, sandbox_sid: str, shell_path: str,
+    cols: int, rows: int,
     _log,
 ) -> None:
     import threading
 
-    _log(f"runner start: name={sandbox_name} sid={sandbox_sid} shell={shell_path}")
+    _log(f"runner start: name={sandbox_name} sid={sandbox_sid} "
+         f"shell={shell_path} size={cols}x{rows}")
 
     pipe_in_name, pipe_out_name = _pipe_names(sandbox_name)
     job_name_str = _job_name(sandbox_name)
@@ -262,11 +365,17 @@ def _execute_runner_inner(
     pipe_out = winapi.open_file(pipe_out_name, winapi.GENERIC_WRITE)
     _log(f"pipes opened: in={pipe_in} out={pipe_out}")
 
-    _log("creating anonymous pipes for shell I/O")
-    stdin_read, stdin_write = winapi.create_pipe(inheritable=True)
-    stdout_read, stdout_write = winapi.create_pipe(inheritable=True)
-    _log(f"shell pipes: stdin_r={stdin_read} stdin_w={stdin_write} "
-         f"stdout_r={stdout_read} stdout_w={stdout_write}")
+    # The ConPTY pipe pair.  Nothing is inherited — the pseudoconsole
+    # duplicates what it needs into its own conhost.
+    pty_in_read, pty_in_write = winapi.create_pipe(inheritable=False)
+    pty_out_read, pty_out_write = winapi.create_pipe(inheritable=False)
+
+    hpc = winapi.create_pseudo_console(cols, rows, pty_in_read, pty_out_write)
+    _log(f"pseudoconsole created: {hpc}")
+    # The ConPTY owns these ends now.  Holding them open here would stop
+    # the output pipe ever reporting end-of-stream.
+    winapi.close_handle(pty_in_read)
+    winapi.close_handle(pty_out_write)
 
     _log(f"creating Job Object: {job_name_str}")
     sa, _sd = winapi.create_null_dacl_sa()
@@ -281,37 +390,39 @@ def _execute_runner_inner(
     _log(f"token created: {token}")
 
     _log(f"launching shell: {shell_path}")
+    # attr_buf holds the attribute list's memory; it must stay referenced
+    # until the list is deleted.
+    attr_buf, attr_addr = winapi.init_proc_attribute_list(1)
+    winapi.update_proc_attribute_console(attr_addr, hpc)
     try:
+        # NULL std handles, not the runner's: a child that inherits std
+        # handles writes to them instead of to its pseudoconsole.
         proc_h, thread_h, shell_pid, _ = winapi.create_process_as_user(
             token, shell_path,
-            std_handles=(stdin_read, stdout_write, stdout_write),
+            attribute_list=attr_addr,
+            std_handles=winapi.NULL_STD_HANDLES,
+            inherit_handles=False,
         )
     except OSError as e:
         _log(f"shell launch failed: {e}")
-        winapi.close_handle(job)
-        winapi.close_handle(token)
-        winapi.close_handle(stdin_read)
-        winapi.close_handle(stdin_write)
-        winapi.close_handle(stdout_read)
-        winapi.close_handle(stdout_write)
-        winapi.close_handle(pipe_in)
-        winapi.close_handle(pipe_out)
+        winapi.close_pseudo_console(hpc)
+        for handle in (job, token, pty_in_write, pty_out_read,
+                       pipe_in, pipe_out):
+            winapi.close_handle(handle)
         raise ProcessError(f"failed to launch shell: {e}")
+    finally:
+        winapi.delete_proc_attribute_list(attr_addr)
 
     _log(f"shell launched, pid={shell_pid}")
-    winapi.close_handle(stdin_read)
-    winapi.close_handle(stdout_write)
-
     winapi.assign_process_to_job(job, proc_h)
     winapi.close_handle(thread_h)
 
-    stop = threading.Event()
     relay_in = threading.Thread(
-        target=_relay, args=(pipe_in, stdin_write, _log, "in", stop),
+        target=_relay_input, args=(pipe_in, pty_in_write, hpc, _log),
         daemon=True,
     )
     relay_out = threading.Thread(
-        target=_relay, args=(stdout_read, pipe_out, _log, "out", stop),
+        target=_relay_output, args=(pty_out_read, pipe_out, _log),
         daemon=True,
     )
     relay_in.start()
@@ -322,15 +433,20 @@ def _execute_runner_inner(
     exit_code = winapi.wait_for_process(proc_h)
     _log(f"shell exited with code {exit_code}")
 
-    stop.set()
-    relay_in.join(timeout=2)
+    # Closing the pseudoconsole breaks the output pipe, which is what
+    # releases the output relay from its blocking read.
+    _log("closing pseudoconsole")
+    winapi.close_pseudo_console(hpc)
     relay_out.join(timeout=2)
+    _log(f"output relay joined (alive={relay_out.is_alive()})")
 
+    # The input relay is parked in a blocking read on pipe_in.  Closing
+    # that handle from here waits for the pending read to finish, which
+    # never happens while the host holds its end open — so leave it to
+    # process exit, which the daemon thread cannot delay.  Closing
+    # pipe_out matters though: it is how the host learns the shell is
+    # gone, via ERROR_BROKEN_PIPE on its reader.
     winapi.close_handle(proc_h)
-    winapi.close_handle(token)
-    winapi.close_handle(job)
-    winapi.close_handle(stdin_write)
-    winapi.close_handle(stdout_read)
-    winapi.close_handle(pipe_in)
-    winapi.close_handle(pipe_out)
+    for handle in (token, job, pty_in_write, pty_out_read, pipe_out):
+        winapi.close_handle(handle)
     _log("runner cleanup done")

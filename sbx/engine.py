@@ -94,7 +94,10 @@ class Engine:
         log.info("created sandbox %s (SID %s)", name, sid)
         return record
 
-    def start(self, project_path: str | Path) -> StartHandle:
+    def start(
+        self, project_path: str | Path,
+        cols: int | None = None, rows: int | None = None,
+    ) -> StartHandle:
         from sbx.network import register_sandbox
         from sbx.process import start_sandbox
 
@@ -121,6 +124,8 @@ class Engine:
             shell=shell_path,
             network_preset=cfg.network,
             proxy_port=proxy_port,
+            cols=cols,
+            rows=rows,
         )
 
         if cfg.network != NetworkPreset.none:

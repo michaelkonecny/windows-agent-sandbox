@@ -821,7 +821,33 @@ PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 ERROR_PIPE_CONNECTED = 535
+ERROR_BROKEN_PIPE = 109
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+# Console modes and std handle ids.
+STD_INPUT_HANDLE = -10
+STD_OUTPUT_HANDLE = -11
+STD_ERROR_HANDLE = -12
+
+# Input modes.  ENABLE_VIRTUAL_TERMINAL_INPUT makes the console deliver
+# keystrokes as VT escape sequences instead of INPUT_RECORD key events;
+# ENABLE_WINDOW_INPUT delivers resize notifications.
+ENABLE_PROCESSED_INPUT = 0x0001
+ENABLE_LINE_INPUT = 0x0002
+ENABLE_ECHO_INPUT = 0x0004
+ENABLE_WINDOW_INPUT = 0x0008
+ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
+
+# Output modes.  ENABLE_VIRTUAL_TERMINAL_PROCESSING makes the console
+# interpret VT sequences written to it rather than printing them.
+ENABLE_PROCESSED_OUTPUT = 0x0001
+ENABLE_WRAP_AT_EOL_OUTPUT = 0x0002
+ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+DISABLE_NEWLINE_AUTO_RETURN = 0x0008
+
+# INPUT_RECORD event types.
+KEY_EVENT = 0x0001
+WINDOW_BUFFER_SIZE_EVENT = 0x0004
 
 
 # Structures
@@ -869,6 +895,25 @@ class COORD(ctypes.Structure):
     _fields_ = [
         ("X", wintypes.SHORT),
         ("Y", wintypes.SHORT),
+    ]
+
+
+class SMALL_RECT(ctypes.Structure):
+    _fields_ = [
+        ("Left", wintypes.SHORT),
+        ("Top", wintypes.SHORT),
+        ("Right", wintypes.SHORT),
+        ("Bottom", wintypes.SHORT),
+    ]
+
+
+class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", COORD),
+        ("dwCursorPosition", COORD),
+        ("wAttributes", wintypes.WORD),
+        ("srWindow", SMALL_RECT),
+        ("dwMaximumWindowSize", COORD),
     ]
 
 
@@ -926,6 +971,22 @@ advapi32.CreateProcessWithLogonW.argtypes = [
     ctypes.POINTER(PROCESS_INFORMATION),
 ]
 advapi32.CreateProcessWithLogonW.restype = wintypes.BOOL
+
+kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
+kernel32.GetStdHandle.restype = wintypes.HANDLE
+
+kernel32.GetConsoleMode.argtypes = [
+    wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD),
+]
+kernel32.GetConsoleMode.restype = wintypes.BOOL
+
+kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+kernel32.SetConsoleMode.restype = wintypes.BOOL
+
+kernel32.GetConsoleScreenBufferInfo.argtypes = [
+    wintypes.HANDLE, ctypes.POINTER(CONSOLE_SCREEN_BUFFER_INFO),
+]
+kernel32.GetConsoleScreenBufferInfo.restype = wintypes.BOOL
 
 kernel32.CreateProcessW.argtypes = [
     wintypes.LPCWSTR, wintypes.LPWSTR,
@@ -1161,6 +1222,42 @@ def write_file(handle: int, data: bytes) -> int:
     if not ok:
         raise ctypes.WinError(ctypes.get_last_error())
     return written.value
+
+
+def get_std_handle(which: int) -> int:
+    """GetStdHandle.  `which` is one of the STD_*_HANDLE ids, which are
+    negative constants the API takes as an unsigned value."""
+    handle = kernel32.GetStdHandle(which & 0xFFFFFFFF)
+    if handle == INVALID_HANDLE_VALUE:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return handle
+
+
+def get_console_mode(handle: int) -> int:
+    mode = wintypes.DWORD()
+    if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return mode.value
+
+
+def set_console_mode(handle: int, mode: int) -> None:
+    if not kernel32.SetConsoleMode(handle, mode):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def get_console_screen_buffer_info(handle: int) -> tuple[int, int]:
+    """Return the console's visible size as (cols, rows).
+
+    Measured from the window rectangle, not the buffer: the buffer is
+    typically far taller than the display (it holds the scrollback), and
+    a terminal size means what the user can see.
+    """
+    info = CONSOLE_SCREEN_BUFFER_INFO()
+    if not kernel32.GetConsoleScreenBufferInfo(handle, ctypes.byref(info)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    cols = info.srWindow.Right - info.srWindow.Left + 1
+    rows = info.srWindow.Bottom - info.srWindow.Top + 1
+    return cols, rows
 
 
 def peek_pipe(handle: int) -> int:
