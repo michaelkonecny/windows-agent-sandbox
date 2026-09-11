@@ -130,3 +130,36 @@ def test_leftover_cleanup(tmp_path, user_sid):
         assert (target / "data.txt").read_text() == "content"
     finally:
         destroy("test-sbx", workspace_root=ws, meta_root=meta, user_sid=user_sid)
+
+
+@pytest.mark.elevation
+def test_file_mount(tmp_path, user_sid):
+    """The config example mounts a single file, not a directory.
+
+    create makes every virtual path a directory before mapping it, which
+    reads as though a file source would break — the bind filter maps the
+    file over it regardless and the target reads back as the file.
+    """
+    backing = tmp_path / "backing"
+    backing.mkdir()
+    source = backing / "some-tool.json"
+    source.write_text('{"hello": "from host"}', encoding="utf-8")
+
+    ws = tmp_path / "workspace"
+    meta = tmp_path / "meta"
+    specs = [
+        MountSpec(
+            source=source,
+            target="config/some-tool.json",
+            sandbox_sid=generate_sid(),
+        )
+    ]
+
+    create("test-sbx", specs, workspace_root=ws, meta_root=meta,
+           user_sid=user_sid)
+    try:
+        target = ws / "test-sbx" / "config" / "some-tool.json"
+        assert target.read_text(encoding="utf-8") == '{"hello": "from host"}'
+    finally:
+        destroy("test-sbx", workspace_root=ws, meta_root=meta,
+                user_sid=user_sid)

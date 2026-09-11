@@ -13,3 +13,5 @@ venv/
 .playwright-mcp/
 specs/plan.md
 poc/
+.coverage
+htmlcov/

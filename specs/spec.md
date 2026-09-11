@@ -345,8 +345,6 @@ Test requirements:
   network design — the kernel-level backstop — does not exist at runtime, and
   the presets rest on the proxy and `HTTPS_PROXY` alone.
 - Address sandboxes by their `--name` alias, not only by project path.
-- Mounting an individual file. The spec allows it; `mounts.create` always
-  creates the virtual path as a directory, and no test covers a file source.
 - Custom network presets (user-defined domain allowlists in config).
 - TUI detailed design and interaction spec.
 - Proxy implementation choice.

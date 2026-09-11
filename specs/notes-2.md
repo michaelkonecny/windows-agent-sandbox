@@ -213,9 +213,15 @@ one gap that makes a spec guarantee untrue rather than merely unbuilt.
 
 ### Not contradictions, just unbuilt
 
-The TUI, custom domain allowlists, and mounting an individual file — the
-spec allows a file mount, but `mounts.create` always creates the virtual
-path as a directory and no test covers it. All three are in Follow-ups.
+The TUI and custom domain allowlists. Both are in Follow-ups.
+
+Mounting an individual file looked like a third — `mounts.create` makes
+every virtual path a directory before mapping it, which reads as though a
+file source could not work, and nothing tested it. Tried it rather than
+assuming: the bind filter maps the file over the directory and the target
+reads back as the file, in all three shapes (target pre-made as a
+directory, as an empty file, or absent). The spec's claim holds, and
+`test_file_mount` now covers it.
 
 ## Also worth knowing
 
