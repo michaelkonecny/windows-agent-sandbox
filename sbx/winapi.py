@@ -324,6 +324,9 @@ kernel32.GetExitCodeProcess.argtypes = [
 ]
 kernel32.GetExitCodeProcess.restype = wintypes.BOOL
 
+kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+kernel32.TerminateProcess.restype = wintypes.BOOL
+
 kernel32.LocalFree.argtypes = [ctypes.c_void_p]
 kernel32.LocalFree.restype = ctypes.c_void_p
 
@@ -750,11 +753,30 @@ def shell_execute_elevated(file: str, params: str) -> int:
     return sei.hProcess
 
 
-def wait_for_process(handle: int) -> int:
-    kernel32.WaitForSingleObject(handle, INFINITE)
+WAIT_TIMEOUT = 0x00000102
+STILL_ACTIVE = 259
+
+
+def wait_for_process(handle: int, timeout_ms: int = INFINITE) -> int:
+    """Wait for a process and return its exit code.
+
+    Raises TimeoutError if timeout_ms elapses first.
+    """
+    if kernel32.WaitForSingleObject(handle, timeout_ms) == WAIT_TIMEOUT:
+        raise TimeoutError(f"process did not exit within {timeout_ms} ms")
     exit_code = wintypes.DWORD()
     kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
     return exit_code.value
+
+
+def process_is_running(handle: int) -> bool:
+    exit_code = wintypes.DWORD()
+    kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+    return exit_code.value == STILL_ACTIVE
+
+
+def terminate_process(handle: int, exit_code: int = 1) -> None:
+    kernel32.TerminateProcess(handle, exit_code)
 
 
 def close_handle(handle: int) -> None:
@@ -904,6 +926,15 @@ advapi32.CreateProcessWithLogonW.argtypes = [
     ctypes.POINTER(PROCESS_INFORMATION),
 ]
 advapi32.CreateProcessWithLogonW.restype = wintypes.BOOL
+
+kernel32.CreateProcessW.argtypes = [
+    wintypes.LPCWSTR, wintypes.LPWSTR,
+    ctypes.c_void_p, ctypes.c_void_p, wintypes.BOOL,
+    wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
+    ctypes.c_void_p,
+    ctypes.POINTER(PROCESS_INFORMATION),
+]
+kernel32.CreateProcessW.restype = wintypes.BOOL
 
 advapi32.CreateProcessAsUserW.argtypes = [
     wintypes.HANDLE, wintypes.LPCWSTR, wintypes.LPWSTR,
@@ -1162,40 +1193,92 @@ def create_process_with_logon(
     return pi.hProcess, pi.hThread, pi.dwProcessId, pi.dwThreadId
 
 
+# Std handles for a process that must use its own console rather than
+# ours.  Left to inherit, a child picks up the parent's std handles and
+# writes there — so a pseudoconsole child whose parent has redirected
+# stdio (a pipe or file, as under pytest or any CI runner) bypasses the
+# pseudoconsole entirely and only its initial frame is ever emitted.
+NULL_STD_HANDLES = (0, 0, 0)
+
+
+def _build_startupinfo(
+    attribute_list: int | None,
+    std_handles: tuple[int, int, int] | None,
+) -> tuple[object, int]:
+    """Build the STARTUPINFO for a CreateProcess* call.
+
+    Returns (si_ref, extra_creation_flags).  si_ref is a ctypes byref
+    object, which keeps the underlying structure alive for as long as
+    the caller holds it.
+
+    An attribute_list forces the EXTENDED_STARTUPINFOEX variant.
+    """
+    if attribute_list is not None:
+        si_ex = STARTUPINFOEXW()
+        si_ex.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
+        si_ex.lpAttributeList = attribute_list
+        si = si_ex.StartupInfo
+        ref, extra_flags = ctypes.byref(si_ex), EXTENDED_STARTUPINFO_PRESENT
+    else:
+        si = STARTUPINFOW()
+        si.cb = ctypes.sizeof(STARTUPINFOW)
+        ref, extra_flags = ctypes.byref(si), 0
+
+    if std_handles is not None:
+        si.dwFlags |= STARTF_USESTDHANDLES
+        si.hStdInput, si.hStdOutput, si.hStdError = std_handles
+
+    return ref, extra_flags
+
+
+def create_process(
+    command_line: str,
+    creation_flags: int = 0,
+    env: ctypes.Array | None = None, cwd: str | None = None,
+    attribute_list: int | None = None,
+    std_handles: tuple[int, int, int] | None = None,
+    inherit_handles: bool | None = None,
+) -> tuple[int, int, int, int]:
+    """CreateProcessW — launch as the current user, no token swap.
+
+    inherit_handles defaults to whether std_handles were given; pass it
+    explicitly as False alongside NULL_STD_HANDLES, where the point is to
+    hand the child nothing rather than to share handles with it.
+    """
+    if inherit_handles is None:
+        inherit_handles = std_handles is not None
+    pi = PROCESS_INFORMATION()
+    cmd = ctypes.create_unicode_buffer(command_line)
+    si_ref, extra_flags = _build_startupinfo(attribute_list, std_handles)
+    ok = kernel32.CreateProcessW(
+        None, cmd, None, None, inherit_handles,
+        creation_flags | extra_flags,
+        ctypes.addressof(env) if env else None,
+        cwd, si_ref, ctypes.byref(pi),
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return pi.hProcess, pi.hThread, pi.dwProcessId, pi.dwThreadId
+
+
 def create_process_as_user(
     token: int, command_line: str,
     creation_flags: int = 0,
     env: ctypes.Array | None = None, cwd: str | None = None,
     attribute_list: int | None = None,
     std_handles: tuple[int, int, int] | None = None,
+    inherit_handles: bool | None = None,
 ) -> tuple[int, int, int, int]:
+    if inherit_handles is None:
+        inherit_handles = std_handles is not None
     pi = PROCESS_INFORMATION()
     cmd = ctypes.create_unicode_buffer(command_line)
-    inherit_handles = std_handles is not None
-    if attribute_list is not None:
-        si_ex = STARTUPINFOEXW()
-        si_ex.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
-        si_ex.lpAttributeList = attribute_list
-        creation_flags |= EXTENDED_STARTUPINFO_PRESENT
-        if std_handles is not None:
-            si_ex.StartupInfo.dwFlags |= STARTF_USESTDHANDLES
-            si_ex.StartupInfo.hStdInput = std_handles[0]
-            si_ex.StartupInfo.hStdOutput = std_handles[1]
-            si_ex.StartupInfo.hStdError = std_handles[2]
-        si_ptr = ctypes.byref(si_ex)
-    else:
-        si = STARTUPINFOW()
-        si.cb = ctypes.sizeof(STARTUPINFOW)
-        if std_handles is not None:
-            si.dwFlags |= STARTF_USESTDHANDLES
-            si.hStdInput = std_handles[0]
-            si.hStdOutput = std_handles[1]
-            si.hStdError = std_handles[2]
-        si_ptr = ctypes.byref(si)
+    si_ref, extra_flags = _build_startupinfo(attribute_list, std_handles)
     ok = advapi32.CreateProcessAsUserW(
         token, None, cmd, None, None, inherit_handles,
-        creation_flags, ctypes.addressof(env) if env else None,
-        cwd, si_ptr, ctypes.byref(pi),
+        creation_flags | extra_flags,
+        ctypes.addressof(env) if env else None,
+        cwd, si_ref, ctypes.byref(pi),
     )
     if not ok:
         raise ctypes.WinError(ctypes.get_last_error())
@@ -1291,11 +1374,20 @@ def init_proc_attribute_list(count: int) -> tuple:
 
 
 def update_proc_attribute_console(attr_list: int, hpc: int) -> None:
-    hpc_ref = ctypes.c_void_p(hpc)
+    """Attach a pseudoconsole to a process about to be created.
+
+    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE is the odd one out among process
+    attributes: lpValue is the HPCON itself, not a pointer to it, which is
+    what the documented sample passes.  Pass a pointer — the convention
+    every other attribute follows — and Windows treats that pointer as the
+    console handle.  Every call still reports success, but the child
+    silently inherits the parent's console instead of the pseudoconsole,
+    and nothing is ever written to the pseudoconsole's pipes.
+    """
     ok = kernel32.UpdateProcThreadAttribute(
         attr_list, 0,
         PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-        ctypes.byref(hpc_ref), ctypes.sizeof(hpc_ref),
+        hpc, ctypes.sizeof(ctypes.c_void_p),
         None, None,
     )
     if not ok:
