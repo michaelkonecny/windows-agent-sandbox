@@ -1277,12 +1277,16 @@ def open_file(path: str, access: int, share: int = 0) -> int:
 
 
 def read_file(handle: int, size: int) -> bytes:
-    buf = (ctypes.c_byte * size)()
+    # c_char, not c_byte: c_byte is signed, and slicing it yields ints in
+    # -128..127, so bytes() rejects anything above 0x7f. This carries the
+    # whole pseudoconsole stream, so that would break on the first
+    # accented character or box-drawing glyph.
+    buf = (ctypes.c_char * size)()
     read = wintypes.DWORD()
     ok = kernel32.ReadFile(handle, buf, size, ctypes.byref(read), None)
     if not ok:
         raise ctypes.WinError(ctypes.get_last_error())
-    return bytes(buf[:read.value])
+    return buf.raw[:read.value]
 
 
 def write_file(handle: int, data: bytes) -> int:
