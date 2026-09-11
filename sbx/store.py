@@ -12,6 +12,11 @@ from pathlib import Path
 
 from sbx.errors import StoreError
 
+# Upper bound on the registry read in one go. A store larger than this
+# would parse as damaged rather than be silently truncated, which is the
+# safe direction — it holds one small record per sandbox.
+MAX_STORE_BYTES = 1024 * 1024
+
 log = logging.getLogger(__name__)
 
 
@@ -129,19 +134,44 @@ class Store:
     def _read_all(self) -> dict:
         if not self._path.exists():
             return {}
-        try:
-            return json.loads(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        # Under the lock: a read that catches a mutation mid-write would
+        # otherwise parse a half-written file. Blocking, because waiting
+        # briefly beats failing a `list` whenever something else is busy.
+        with self._locked(blocking=True) as fd:
+            return self._parse(fd)
+
+    def _parse(self, fd: int) -> dict:
+        """Read the registry, telling "nothing yet" from "damaged".
+
+        An empty file is normal — `_locked` creates it before anything is
+        written. Unparseable content is not, and must not read as an empty
+        store: callers would be told no sandboxes exist while their bind
+        links, ACLs and workspaces are still in place, with nothing left
+        that knows to remove them.
+        """
+        os.lseek(fd, 0, os.SEEK_SET)
+        raw = os.read(fd, MAX_STORE_BYTES)
+        if not raw.strip():
             return {}
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise StoreError(
+                f"sandbox registry at {self._path} is unreadable: {e}. "
+                f"Repair it or remove it by hand — removing it loses track "
+                f"of existing sandboxes, whose bind links and ACLs then "
+                f"have to be cleaned up manually."
+            )
 
     @contextmanager
-    def _locked(self):
+    def _locked(self, blocking: bool = False):
         self._path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(
             str(self._path), os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o644
         )
+        mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
         try:
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            msvcrt.locking(fd, mode, 1)
         except (IOError, OSError):
             os.close(fd)
             raise StoreError("store is locked by another process")
@@ -154,9 +184,7 @@ class Store:
 
     def _mutate(self, fn):
         with self._locked() as fd:
-            os.lseek(fd, 0, os.SEEK_SET)
-            raw = os.read(fd, 1024 * 1024)
-            data = json.loads(raw.decode("utf-8")) if raw.strip() else {}
+            data = self._parse(fd)
             fn(data)
             out = json.dumps(data, indent=2).encode("utf-8")
             os.lseek(fd, 0, os.SEEK_SET)
