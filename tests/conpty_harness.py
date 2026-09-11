@@ -49,8 +49,10 @@ class ConPtyShell:
         rows: int = 30,
         capture_screen: bool = False,
         prompt: str = DEFAULT_PROMPT,
+        cwd: str | None = None,
     ) -> None:
         self.command = command
+        self.cwd = cwd
         self.cols = cols
         self.rows = rows
         self.prompt = prompt
@@ -93,6 +95,7 @@ class ConPtyShell:
         try:
             self._process, thread_h, self.pid, _ = winapi.create_process(
                 self.command,
+                cwd=self.cwd,
                 attribute_list=attr_addr,
                 std_handles=winapi.NULL_STD_HANDLES,
                 inherit_handles=False,

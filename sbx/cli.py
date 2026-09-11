@@ -74,12 +74,14 @@ def _vt_console():
         )
         yield conin, conout
     finally:
-        try:
-            winapi.set_console_mode(conin, in_mode)
-            winapi.set_console_mode(conout, out_mode)
-        finally:
-            winapi.close_handle(conin)
-            winapi.close_handle(conout)
+        # Restoring the modes is the part that matters.  conin is left
+        # open on purpose: the input pump is parked in a blocking
+        # ReadConsoleInput on it, and CloseHandle waits for that pending
+        # read to finish — which hangs the session instead of ending it.
+        # Process exit releases the handle.
+        winapi.set_console_mode(conin, in_mode)
+        winapi.set_console_mode(conout, out_mode)
+        winapi.close_handle(conout)
 
 
 def encode_console_records(records, terminal_size) -> bytes:
