@@ -6,8 +6,20 @@ from sbx.identity import generate_sid
 from sbx.mounts import MountSpec, create, destroy
 
 
+@pytest.fixture
+def user_sid():
+    """Stands in for sbx-user's SID.
+
+    mounts resolves the real account by name, but these tests must not
+    depend on the machine having it — test_identity deletes the account —
+    so they supply a synthetic SID instead.  What the second ACE actually
+    buys is covered by the system tests, which run as the real account.
+    """
+    return generate_sid()
+
+
 @pytest.mark.elevation
-def test_create_bind_links(tmp_path):
+def test_create_bind_links(tmp_path, user_sid):
     source = tmp_path / "backing"
     source.mkdir()
     (source / "data.txt").write_text("content")
@@ -17,17 +29,17 @@ def test_create_bind_links(tmp_path):
     sid = generate_sid()
     specs = [MountSpec(source=source, target="repo", sandbox_sid=sid)]
 
-    create("test-sbx", specs, workspace_root=ws, meta_root=meta)
+    create("test-sbx", specs, workspace_root=ws, meta_root=meta, user_sid=user_sid)
     try:
         target = ws / "test-sbx" / "repo"
         assert target.exists()
         assert (target / "data.txt").read_text() == "content"
     finally:
-        destroy("test-sbx", workspace_root=ws, meta_root=meta)
+        destroy("test-sbx", workspace_root=ws, meta_root=meta, user_sid=user_sid)
 
 
 @pytest.mark.elevation
-def test_acls_set(tmp_path):
+def test_acls_set(tmp_path, user_sid):
     source = tmp_path / "backing"
     source.mkdir()
     sid_str = generate_sid()
@@ -36,7 +48,7 @@ def test_acls_set(tmp_path):
     meta = tmp_path / "meta"
     specs = [MountSpec(source=source, target="code", sandbox_sid=sid_str)]
 
-    create("test-sbx", specs, workspace_root=ws, meta_root=meta)
+    create("test-sbx", specs, workspace_root=ws, meta_root=meta, user_sid=user_sid)
     try:
         token = winapi.create_sandbox_token_from_sid(sid_str)
     except AttributeError:
@@ -51,11 +63,11 @@ def test_acls_set(tmp_path):
             winapi.revert_to_self()
     finally:
         winapi.close_handle(token)
-        destroy("test-sbx", workspace_root=ws, meta_root=meta)
+        destroy("test-sbx", workspace_root=ws, meta_root=meta, user_sid=user_sid)
 
 
 @pytest.mark.elevation
-def test_destroy_removes_bind_links(tmp_path):
+def test_destroy_removes_bind_links(tmp_path, user_sid):
     source = tmp_path / "backing"
     source.mkdir()
 
@@ -64,16 +76,16 @@ def test_destroy_removes_bind_links(tmp_path):
     sid = generate_sid()
     specs = [MountSpec(source=source, target="repo", sandbox_sid=sid)]
 
-    create("test-sbx", specs, workspace_root=ws, meta_root=meta)
+    create("test-sbx", specs, workspace_root=ws, meta_root=meta, user_sid=user_sid)
     target = ws / "test-sbx" / "repo"
     assert target.exists()
 
-    destroy("test-sbx", workspace_root=ws, meta_root=meta)
+    destroy("test-sbx", workspace_root=ws, meta_root=meta, user_sid=user_sid)
     assert not target.exists()
 
 
 @pytest.mark.elevation
-def test_destroy_cleans_acls(tmp_path):
+def test_destroy_cleans_acls(tmp_path, user_sid):
     source = tmp_path / "backing"
     source.mkdir()
     sid_str = generate_sid()
@@ -82,8 +94,8 @@ def test_destroy_cleans_acls(tmp_path):
     meta = tmp_path / "meta"
     specs = [MountSpec(source=source, target="code", sandbox_sid=sid_str)]
 
-    create("test-sbx", specs, workspace_root=ws, meta_root=meta)
-    destroy("test-sbx", workspace_root=ws, meta_root=meta)
+    create("test-sbx", specs, workspace_root=ws, meta_root=meta, user_sid=user_sid)
+    destroy("test-sbx", workspace_root=ws, meta_root=meta, user_sid=user_sid)
 
     from sbx.tokens import create_sandbox_token
     token = create_sandbox_token(sid_str)
@@ -99,7 +111,7 @@ def test_destroy_cleans_acls(tmp_path):
 
 
 @pytest.mark.elevation
-def test_leftover_cleanup(tmp_path):
+def test_leftover_cleanup(tmp_path, user_sid):
     source = tmp_path / "backing"
     source.mkdir()
     (source / "data.txt").write_text("content")
@@ -113,8 +125,8 @@ def test_leftover_cleanup(tmp_path):
     target.mkdir(parents=True)
     winapi.create_bind_link(str(target), str(source))
 
-    create("test-sbx", specs, workspace_root=ws, meta_root=meta)
+    create("test-sbx", specs, workspace_root=ws, meta_root=meta, user_sid=user_sid)
     try:
         assert (target / "data.txt").read_text() == "content"
     finally:
-        destroy("test-sbx", workspace_root=ws, meta_root=meta)
+        destroy("test-sbx", workspace_root=ws, meta_root=meta, user_sid=user_sid)

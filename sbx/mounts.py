@@ -8,6 +8,7 @@ from pathlib import Path
 
 from sbx import winapi
 from sbx.errors import MountError
+from sbx.identity import SANDBOX_USER
 
 log = logging.getLogger(__name__)
 
@@ -75,8 +76,10 @@ def create(
     specs: list[MountSpec],
     workspace_root: Path | None = None,
     meta_root: Path | None = None,
+    user_sid: str | None = None,
 ) -> None:
     ws = _workspace(sandbox_name, workspace_root)
+    sandbox_user_sid = _sandbox_user_sid(user_sid)
 
     for spec in specs:
         target_path = ws / spec.target
@@ -95,17 +98,22 @@ def create(
             )
         log.info("bind link %s -> %s", target_path, spec.source)
 
-        sid_ptr = winapi.string_to_sid(spec.sandbox_sid)
-        try:
-            winapi.grant_sid_access(str(spec.source), sid_ptr)
-        except OSError as e:
-            winapi.remove_bind_link(str(target_path))
-            raise MountError(
-                f"failed to set ACL on {spec.source}: {e}"
-            )
-        finally:
-            winapi.kernel32.LocalFree(sid_ptr)
-        log.info("granted SID %s access to %s", spec.sandbox_sid, spec.source)
+        # Two ACEs, because a fully restricted token is checked twice and
+        # has to pass both: the sandbox user satisfies the ordinary check,
+        # the per-sandbox synthetic SID satisfies the restricted one.
+        # Granting only the synthetic SID leaves the backing path
+        # unreachable; granting only sbx-user would drop the isolation
+        # between sandboxes, since they all run as that one account.
+        for sid_string in (spec.sandbox_sid, sandbox_user_sid):
+            sid_ptr = winapi.string_to_sid(sid_string)
+            try:
+                winapi.grant_sid_access(str(spec.source), sid_ptr)
+            except OSError as e:
+                winapi.remove_bind_link(str(target_path))
+                raise MountError(f"failed to set ACL on {spec.source}: {e}")
+            finally:
+                winapi.kernel32.LocalFree(sid_ptr)
+            log.info("granted SID %s access to %s", sid_string, spec.source)
 
     _save_meta(sandbox_name, specs, meta_root)
 
@@ -114,11 +122,13 @@ def destroy(
     sandbox_name: str,
     workspace_root: Path | None = None,
     meta_root: Path | None = None,
+    user_sid: str | None = None,
 ) -> None:
     info = _load_meta(sandbox_name, meta_root)
     ws = _workspace(sandbox_name, workspace_root)
 
     if info:
+        still_in_use = _sources_used_by_others(sandbox_name, meta_root)
         for entry in info:
             target_path = ws / entry["target"]
             try:
@@ -126,15 +136,25 @@ def destroy(
             except OSError as e:
                 log.warning("failed to remove bind link %s: %s", target_path, e)
 
-            sid_ptr = winapi.string_to_sid(entry["sandbox_sid"])
-            try:
-                winapi.remove_sid_access(str(entry["source"]), sid_ptr)
-            except OSError as e:
-                log.warning(
-                    "failed to remove ACL from %s: %s", entry["source"], e
+            revoke = [entry["sandbox_sid"]]
+            if entry["source"] not in still_in_use:
+                revoke.append(_sandbox_user_sid(user_sid))
+            else:
+                log.info(
+                    "keeping %s access to %s — another sandbox mounts it",
+                    SANDBOX_USER, entry["source"],
                 )
-            finally:
-                winapi.kernel32.LocalFree(sid_ptr)
+
+            for sid_string in revoke:
+                sid_ptr = winapi.string_to_sid(sid_string)
+                try:
+                    winapi.remove_sid_access(str(entry["source"]), sid_ptr)
+                except OSError as e:
+                    log.warning(
+                        "failed to remove ACL from %s: %s", entry["source"], e
+                    )
+                finally:
+                    winapi.kernel32.LocalFree(sid_ptr)
 
     if ws.exists():
         try:
@@ -163,6 +183,40 @@ def verify(
         if not target_path.exists():
             issues.append(f"bind link missing: {target_path}")
     return issues
+
+
+def _sandbox_user_sid(user_sid: str | None = None) -> str:
+    """The SID that satisfies the ordinary access check on a backing path.
+
+    Resolved from the account name unless a caller supplies one, which
+    keeps mount handling testable without depending on the machine
+    actually having the account.
+    """
+    return user_sid or winapi.lookup_account_sid(SANDBOX_USER)
+
+
+def _sources_used_by_others(
+    sandbox_name: str, meta_root: Path | None = None
+) -> set[str]:
+    """Backing paths still mounted by some other sandbox.
+
+    The sandbox user's ACE is shared, so it can only be revoked once no
+    other sandbox is relying on it.
+    """
+    sources: set[str] = set()
+    meta_dir = _meta_dir(meta_root)
+    if not meta_dir.exists():
+        return sources
+
+    for meta in meta_dir.glob("*.json"):
+        if meta.stem == sandbox_name:
+            continue
+        try:
+            entries = json.loads(meta.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        sources.update(entry["source"] for entry in entries)
+    return sources
 
 
 def _rmtree(path: Path) -> None:

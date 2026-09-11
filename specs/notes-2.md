@@ -83,21 +83,17 @@ day they start working.
   its input stream for `0x03` and call `GenerateConsoleCtrlEvent` on the
   shell's process group.
 
-### A mount is not readable from inside its own sandbox
+### A mount is not readable from inside its own sandbox — fixed
+
+Left here for the record; the fix is described under AFK decisions below.
 
 - Symptom: `type <mount>\work\from_host.txt` gives "Access is denied."
-- Cause: `setup_mounts` grants only the per-sandbox synthetic SID on the
+- Cause: `mounts.create` granted only the per-sandbox synthetic SID on the
   backing path, never `sbx-user`. A fully restricted token must pass the
   user check *and* the restricted-SID check. The synthetic SID satisfies
   only the second, so any backing path that does not already grant
   `sbx-user` — anything under the host user's profile, `%TEMP%` included —
-  fails the first.
-- Granting `sbx-user` on the backing path looks safe: cross-sandbox
-  isolation comes from the synthetic SID, which another sandbox's token
-  does not carry. It is still a change to the filesystem mechanism, so it
-  needs sign-off rather than a quiet fix.
-- Consequence for the suite: `test_paths_outside_any_mount_are_denied`
-  passes weakly for now, since reads are denied nearly everywhere.
+  failed the first.
 
 ## Also worth knowing
 
@@ -124,10 +120,47 @@ day they start working.
   fails inside the helper and the only symptom is "elevated subprocess
   produced no output".
 
+## AFK decisions
+
+Decided without sign-off during an 8h `/afk` window. Each is one commit,
+so each is revertible on its own.
+
+### Grant `sbx-user` on mount backing paths — done
+
+- Rationale: mounts were unusable, which is the product's core feature,
+  and the spec's own description of the mechanism could not work without
+  it. Isolation still comes from the synthetic SID, which another
+  sandbox's token does not carry — now covered by
+  `test_one_sandbox_cannot_read_anothers_mount`.
+- Destroy revokes the `sbx-user` ACE only once no other sandbox still
+  mounts that backing path; the ACE is shared, unlike the synthetic SID.
+- Uncovered while testing: a backing path whose DACL grants
+  `BUILTIN\Users` or `Everyone` is reachable from *every* sandbox, because
+  those SIDs sit in every restricted token — that is what makes system
+  paths readable. A project under `C:\Users\Public` therefore gets no
+  cross-sandbox isolation. Recorded in the spec as a caveat.
+- Sharper consequence, and the reason to read this one carefully:
+  Cygwin/MSYS2 shells run with an empty RestrictedSids list, so the
+  `sbx-user` ACE is all the check they face. A git-bash sandbox can now
+  read and write *every* other sandbox's mounts. git-bash is the default
+  shell. Before this change it could reach nothing, so the hole was
+  masked by the feature being broken. Options, none taken: change the
+  default shell to `cmd` or `pwsh`; refuse to mount when the shell is
+  Cygwin; or solve the Cygwin carve-out properly.
+
+### Leave the host environment inherited — no change
+
+- The sandbox shell keeps inheriting the host process's environment.
+  Scrubbing it is the tidier answer but risks removing `PATH` entries the
+  agent needs, and "which variables survive" is a product question with
+  no obviously right default. Reversible either way; not worth guessing
+  while away.
+
 ## Follow-ups
 
 - Decide how Ctrl+C should reach the sandbox shell.
-- Decide whether `setup_mounts` should grant `sbx-user` on backing paths.
+- Decide what to do about git-bash sandboxes sharing mount access (see
+  AFK decisions above) — this is the one with security consequences.
 - Decide whether the sandbox shell should inherit the host environment.
 - Implement the network system tests once the proxy and WFP rules are
   verified; scenarios are listed in `specs/tests/system.md`.

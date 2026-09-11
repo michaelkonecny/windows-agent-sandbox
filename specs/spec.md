@@ -180,7 +180,10 @@ No shared synthetic SID or extra system path ACLs are needed — `BUILTIN\Users`
 #### Mount setup
 
 - Mount targets appear as bind links inside the sandbox user's home directory, under a per-sandbox subdirectory (`C:\Users\sbx-user\<sandbox-name>\`).
-- Each mount's backing path gets an ACE granting the per-sandbox synthetic SID read+write access.
+- Each mount's backing path gets two ACEs, both read+write: one for the per-sandbox synthetic SID, one for `sbx-user`. A fully restricted token is checked twice and must pass both checks — `sbx-user` satisfies the ordinary one, the synthetic SID the restricted one. Granting only the synthetic SID leaves the backing path unreachable.
+- Isolation rests on the synthetic SID alone, since every sandbox runs as `sbx-user`. Sandbox A's token does not carry B's SID, so B's backing path is denied.
+- Caveat — a backing path whose DACL grants `BUILTIN\Users` or `Everyone` is reachable from every sandbox, because those SIDs are in every restricted token (they are what makes system paths readable). Keep project sources out of world-readable locations such as `C:\Users\Public`.
+- The `sbx-user` ACE is shared, so destroy only revokes it once no other sandbox still mounts that backing path.
 - The engine manages bind links and ACLs during sandbox create/destroy.
 
 ### Network mechanism

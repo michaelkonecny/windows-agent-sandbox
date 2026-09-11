@@ -68,7 +68,9 @@ def sandbox_user_ready():
 
     from sbx.elevation import run_elevated
 
-    if _credentials_path().exists():
+    # Credentials alone are not enough: tests/test_identity.py deletes the
+    # account and leaves it deleted, so stale credentials can outlive it.
+    if _credentials_path().exists() and winapi.user_exists(SANDBOX_USER):
         return
 
     try:
@@ -275,16 +277,6 @@ def test_git_bash_under_conpty(sandbox_user_ready):
 # ── Filesystem isolation ─────────────────────────────────────
 
 
-@pytest.mark.xfail(
-    reason="setup_mounts grants only the per-sandbox synthetic SID on the "
-           "backing path, never sbx-user. A fully restricted token has to "
-           "pass both the user check and the restricted-SID check, so a "
-           "project whose backing path does not already grant sbx-user "
-           "(anything under the host user's profile, including %TEMP%) is "
-           "unreadable through its own mount. Needs a decision on the "
-           "filesystem mechanism; see specs/notes-2.md.",
-    strict=True,
-)
 def test_mount_is_readable_and_writable(sandbox):
     """The project appears at its mount target inside the sandbox, and
     writes there land back on the host path."""
@@ -304,14 +296,37 @@ def test_mount_is_readable_and_writable(sandbox):
     assert "SANDBOX_WROTE_IT" in written.read_text()
 
 
+def test_one_sandbox_cannot_read_anothers_mount(sandbox):
+    """The point of the per-sandbox synthetic SID.
+
+    Both sandboxes run as the same account and both backing paths grant
+    that account, so the ordinary access check passes for either.  Only
+    the restricted check separates them: a token carrying sandbox A's SID
+    finds no matching ACE on B's backing path.
+    """
+    other = make_project()
+    (other / "work" / "from_host.txt").write_text("OTHER_SECRET")
+    create_sandbox(other)
+    try:
+        with host_terminal() as term:
+            enter_sandbox(term, sandbox)
+
+            # Its own mount is readable, so a denial below is about B
+            # specifically rather than everything being unreachable.
+            term.send_line(rf"type {sandbox_mount(sandbox)}\work\from_host.txt")
+            term.expect(r"HOSTFILE_CONTENT", timeout=STEP_TIMEOUT)
+
+            term.send_line(rf"type {sandbox_mount(other)}\work\from_host.txt")
+            term.expect(r"(?i)denied|cannot find", timeout=STEP_TIMEOUT)
+            assert "OTHER_SECRET" not in term.read_all()
+    finally:
+        teardown_sandbox(other)
+
+
 def test_paths_outside_any_mount_are_denied(sandbox):
     """The sandbox user's own home is outside every mount, so the fully
-    restricted token refuses it even though the account owns it.
-
-    Weaker than it looks while the mount ACL bug above stands: right now
-    reads are denied everywhere outside the system paths.  It regains its
-    teeth once mounts are readable.
-    """
+    restricted token refuses it even though the account owns it — nothing
+    there carries a restricted SID the token holds."""
     with host_terminal() as term:
         enter_sandbox(term, sandbox)
         term.send_line(rf"echo nope> C:\Users\{SANDBOX_USER}\outside.txt")

@@ -192,6 +192,13 @@ advapi32.AllocateAndInitializeSid.restype = wintypes.BOOL
 advapi32.FreeSid.argtypes = [ctypes.c_void_p]
 advapi32.FreeSid.restype = ctypes.c_void_p
 
+advapi32.LookupAccountNameW.argtypes = [
+    wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p,
+    ctypes.POINTER(wintypes.DWORD), wintypes.LPWSTR,
+    ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+]
+advapi32.LookupAccountNameW.restype = wintypes.BOOL
+
 advapi32.ConvertSidToStringSidW.argtypes = [
     ctypes.c_void_p,
     ctypes.POINTER(wintypes.LPWSTR),
@@ -404,6 +411,34 @@ def remove_bind_link(virtual_path: str) -> None:
         raise OSError(
             f"BfRemoveMapping failed: HRESULT 0x{hr & 0xFFFFFFFF:08X}"
         )
+
+
+def lookup_account_sid(name: str) -> str:
+    """Resolve an account name to its SID string.
+
+    Called in a double pass: the first call fails and reports the buffer
+    sizes needed, the second fills them.
+    """
+    sid_size = wintypes.DWORD(0)
+    domain_size = wintypes.DWORD(0)
+    sid_type = wintypes.DWORD()
+
+    advapi32.LookupAccountNameW(
+        None, name, None, ctypes.byref(sid_size),
+        None, ctypes.byref(domain_size), ctypes.byref(sid_type),
+    )
+    if sid_size.value == 0:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    sid_buf = (ctypes.c_byte * sid_size.value)()
+    domain_buf = ctypes.create_unicode_buffer(domain_size.value)
+    ok = advapi32.LookupAccountNameW(
+        None, name, sid_buf, ctypes.byref(sid_size),
+        domain_buf, ctypes.byref(domain_size), ctypes.byref(sid_type),
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return sid_to_string(ctypes.addressof(sid_buf))
 
 
 # ACL helpers
