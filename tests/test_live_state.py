@@ -93,3 +93,36 @@ def test_a_created_sandbox_is_not_reported_as_running(
     set_running(monkeypatch, True)
 
     assert engine.status(project)["state"] == "created"
+
+
+def test_destroy_does_not_stop_a_sandbox_that_already_ended(
+    engine_with_record, monkeypatch
+):
+    """Stopping an already-gone sandbox only logs a failure to open a Job
+    Object that no longer exists."""
+    engine, project = engine_with_record
+    set_running(monkeypatch, False)
+
+    stopped = []
+    monkeypatch.setattr(Engine, "stop", lambda self, p: stopped.append(p))
+    monkeypatch.setattr(engine_module, "run_elevated", lambda *a, **k: {})
+
+    engine.destroy(project)
+
+    assert stopped == []
+    assert engine.list() == []
+
+
+def test_destroy_stops_a_sandbox_that_is_still_running(
+    engine_with_record, monkeypatch
+):
+    engine, project = engine_with_record
+    set_running(monkeypatch, True)
+
+    stopped = []
+    monkeypatch.setattr(Engine, "stop", lambda self, p: stopped.append(p))
+    monkeypatch.setattr(engine_module, "run_elevated", lambda *a, **k: {})
+
+    engine.destroy(project)
+
+    assert stopped == [project]

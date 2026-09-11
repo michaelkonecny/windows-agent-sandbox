@@ -119,9 +119,12 @@ def test_destroy_running_sandbox(engine, config_path, tmp_project):
 
     engine.store.update(tmp_project, state=SandboxState.running, pids=[9999])
 
+    # destroy checks the Job Object rather than the stored state, so the
+    # sandbox has to look genuinely alive for it to stop anything.
     with mock.patch.object(engine, "stop") as mock_stop:
         with mock.patch("sbx.engine.run_elevated", return_value={"destroyed": True}):
-            engine.destroy(tmp_project)
+            with mock.patch("sbx.engine.sandbox_is_running", return_value=True):
+                engine.destroy(tmp_project)
 
     mock_stop.assert_called_once()
     assert engine.store.get(tmp_project) is None

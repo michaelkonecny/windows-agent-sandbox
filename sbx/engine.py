@@ -191,7 +191,10 @@ class Engine:
         if record is None:
             raise SandboxError(f"no sandbox for {project_path}")
 
-        if record.state == SandboxState.running:
+        # The live state, not the stored one: a sandbox the user exited is
+        # still recorded as running, and stopping it again just logs a
+        # failure to open a Job Object that is already gone.
+        if self._live_state(record) == SandboxState.running:
             self.stop(project_path)
 
         run_elevated("destroy_mounts", {"sandbox_name": record.name})
