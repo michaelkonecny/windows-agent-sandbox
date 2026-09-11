@@ -64,13 +64,47 @@ def _start(sandbox_name, sandbox_sid, credentials_path, shell="cmd.exe",
 
 
 def _read_output(handle: StartHandle, timeout: float = 5.0) -> bytes:
+    """Drain whatever the shell has produced, up to `timeout`.
+
+    Keeps reading rather than returning the first chunk: a pseudoconsole
+    emits output in many small pieces, so one read easily comes back
+    holding nothing but an escape sequence.
+    """
     deadline = time.monotonic() + timeout
+    buf = bytearray()
     while time.monotonic() < deadline:
-        avail = winapi.peek_pipe(handle.pipe_out)
+        try:
+            avail = winapi.peek_pipe(handle.pipe_out)
+        except OSError:
+            break
         if avail > 0:
-            return winapi.read_file(handle.pipe_out, avail)
-        time.sleep(0.2)
-    return b""
+            buf.extend(winapi.read_file(handle.pipe_out, avail))
+        else:
+            time.sleep(0.1)
+    return bytes(buf)
+
+
+def _read_until(
+    handle: StartHandle, marker: bytes, timeout: float = 10.0
+) -> bytes:
+    """Accumulate output until `marker` shows up, or time runs out.
+
+    Returns what arrived either way, so a failing assertion can show it.
+    """
+    deadline = time.monotonic() + timeout
+    buf = bytearray()
+    while time.monotonic() < deadline:
+        try:
+            avail = winapi.peek_pipe(handle.pipe_out)
+        except OSError:
+            break
+        if avail > 0:
+            buf.extend(winapi.read_file(handle.pipe_out, avail))
+            if marker in buf:
+                break
+        else:
+            time.sleep(0.1)
+    return bytes(buf)
 
 
 def _send_command(handle: StartHandle, cmd: str) -> None:
@@ -85,8 +119,8 @@ def test_runner_launches_as_sbx_user(
     try:
         _read_output(handle, timeout=5)
         _send_command(handle, "echo %username%")
-        output = _read_output(handle, timeout=5)
-        assert b"sbx-user" in output.lower()
+        output = _read_until(handle, b"sbx-user")
+        assert b"sbx-user" in output.lower(), output
     finally:
         stop_sandbox(sandbox_name)
         winapi.wait_for_process(handle.runner_process)
@@ -118,8 +152,8 @@ def test_shell_inherits_job_object(
     try:
         _read_output(handle, timeout=5)
         _send_command(handle, "echo JOB_CHECK_MARKER")
-        output = _read_output(handle, timeout=5)
-        assert b"JOB_CHECK_MARKER" in output
+        output = _read_until(handle, b"JOB_CHECK_MARKER")
+        assert b"JOB_CHECK_MARKER" in output, output
 
         job_name = _job_name(sandbox_name)
         job = winapi.open_job_object(
@@ -145,8 +179,8 @@ def test_child_inherits_job_object(
     try:
         _read_output(handle, timeout=5)
         _send_command(handle, "cmd /c echo CHILD_MARKER")
-        output = _read_output(handle, timeout=5)
-        assert b"CHILD_MARKER" in output
+        output = _read_until(handle, b"CHILD_MARKER")
+        assert b"CHILD_MARKER" in output, output
 
         job_name = _job_name(sandbox_name)
         job = winapi.open_job_object(
@@ -172,8 +206,8 @@ def test_echo_roundtrip(sandbox_name, sandbox_sid, credentials_path):
     try:
         _read_output(handle, timeout=5)
         _send_command(handle, "echo RELAY_TEST_OUTPUT")
-        output = _read_output(handle, timeout=5)
-        assert b"RELAY_TEST_OUTPUT" in output
+        output = _read_until(handle, b"RELAY_TEST_OUTPUT")
+        assert b"RELAY_TEST_OUTPUT" in output, output
     finally:
         stop_sandbox(sandbox_name)
         winapi.wait_for_process(handle.runner_process)
@@ -197,7 +231,7 @@ def test_restricted_token_applied(sandbox_name, sandbox_sid, credentials_path):
         _send_command(
             handle, r"echo probe > C:\Users\sbx-user\sbx-token-probe.txt"
         )
-        output = _read_output(handle, timeout=5)
+        output = _read_until(handle, b"denied")
         assert b"denied" in output.lower(), output
     finally:
         stop_sandbox(sandbox_name)
@@ -249,8 +283,8 @@ def test_https_proxy_set(sandbox_name, sandbox_sid, credentials_path):
     try:
         _read_output(handle, timeout=5)
         _send_command(handle, "echo %HTTPS_PROXY%")
-        output = _read_output(handle, timeout=5)
-        assert b"http://127.0.0.1:8080" in output
+        output = _read_until(handle, b"http://127.0.0.1:8080")
+        assert b"http://127.0.0.1:8080" in output, output
     finally:
         stop_sandbox(sandbox_name)
         winapi.wait_for_process(handle.runner_process)
@@ -266,8 +300,8 @@ def test_https_proxy_not_set(sandbox_name, sandbox_sid, credentials_path):
     try:
         _read_output(handle, timeout=5)
         _send_command(handle, "echo [%HTTPS_PROXY%]")
-        output = _read_output(handle, timeout=5)
-        assert b"[%HTTPS_PROXY%]" in output
+        output = _read_until(handle, b"[%HTTPS_PROXY%]")
+        assert b"[%HTTPS_PROXY%]" in output, output
     finally:
         stop_sandbox(sandbox_name)
         winapi.wait_for_process(handle.runner_process)
@@ -290,8 +324,8 @@ def test_git_bash_under_restricted_token(
     try:
         _read_output(handle, timeout=8)
         _send_command(handle, "echo GIT_BASH_OK")
-        output = _read_output(handle, timeout=8)
-        assert b"GIT_BASH_OK" in output
+        output = _read_until(handle, b"GIT_BASH_OK", timeout=15)
+        assert b"GIT_BASH_OK" in output, output
     finally:
         stop_sandbox(sandbox_name)
         winapi.wait_for_process(handle.runner_process)

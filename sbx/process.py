@@ -154,6 +154,21 @@ def start_sandbox(
     else:
         shell_path = shell
 
+    if _is_cygwin_shell(shell_path):
+        # Cygwin shells cannot start under restricted SIDs at all — init
+        # fails creating a signal pipe with ERROR_ACCESS_DENIED — so they
+        # run with privileges stripped but no synthetic SID. Every sandbox
+        # runs as the same account and backing paths grant that account,
+        # so such a shell reaches every other sandbox's mounts. Warn
+        # before anything is created, so the message survives a later
+        # failure.
+        log.warning(
+            "%s is Cygwin-based, so this sandbox runs without filesystem "
+            "isolation: it can read and write other sandboxes' mounts. "
+            "Use cmd, powershell or pwsh for an isolated sandbox.",
+            shell_path,
+        )
+
     username, password = get_credentials(credentials_path)
 
     pipe_in_name, pipe_out_name = _pipe_names(sandbox_name)

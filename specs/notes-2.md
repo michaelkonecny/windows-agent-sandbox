@@ -144,9 +144,24 @@ so each is revertible on its own.
   `sbx-user` ACE is all the check they face. A git-bash sandbox can now
   read and write *every* other sandbox's mounts. git-bash is the default
   shell. Before this change it could reach nothing, so the hole was
-  masked by the feature being broken. Options, none taken: change the
-  default shell to `cmd` or `pwsh`; refuse to mount when the shell is
-  Cygwin; or solve the Cygwin carve-out properly.
+  masked by the feature being broken.
+
+### Warn loudly on Cygwin shells; leave the default shell alone — done
+
+- Tested whether the carve-out is still needed now that the shell gets a
+  real console: it is. Under a full restricted token git-bash still dies
+  during init with `couldn't create signal pipe, Win32 error 5`
+  (access denied), with ConPTY in place and running as `sbx-user`. So
+  "solve the carve-out properly" is not available cheaply — Cygwin creates
+  that pipe before we get any say.
+- Taken: `start_sandbox` logs a warning naming the shell whenever the
+  isolation is being traded away. Purely additive, changes no behaviour,
+  and the CLI logs at WARNING by default so it reaches the user.
+- Not taken: changing the default shell away from `git-bash`, or refusing
+  to mount for Cygwin shells. Both change documented product behaviour on
+  a security-sensitive axis, which is yours to call, not mine while
+  you're away. My recommendation is to default to `pwsh` and keep
+  git-bash opt-in.
 
 ### Leave the host environment inherited — no change
 

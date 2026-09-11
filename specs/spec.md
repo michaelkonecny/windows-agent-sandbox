@@ -263,7 +263,11 @@ The initial terminal size (cols, rows) is passed to the runner as command-line a
 
 Git-bash and other Cygwin-based shells query their own token and create session-local kernel objects (shared memory, signal-handling named pipes) during init. The additional access check imposed by `RestrictedSids` fails against those objects, so Cygwin shells launch with `DISABLE_MAX_PRIVILEGE` only and an empty `RestrictedSids` list. The engine detects them by looking for `msys-2.0.dll` or `cygwin1.dll` next to the executable or in the sibling `usr/bin` tree.
 
-Consequence — a Cygwin shell keeps privilege stripping but loses synthetic-SID filesystem isolation. Non-Cygwin shells (`cmd`, `powershell`, `pwsh`) get the full restricted token. For tokens that do carry restricted SIDs, the engine also sets null DACLs on the token's default DACL (`SetTokenInformation`) and on the token object itself (`SetKernelObjectSecurity`), so the restricted process can open its own token and create kernel objects.
+Giving the shell a real console does not help: under a full restricted token git-bash still dies during init with `couldn't create signal pipe, Win32 error 5`, verified with ConPTY in place.
+
+Consequence — a Cygwin shell keeps privilege stripping but loses synthetic-SID filesystem isolation, and because every sandbox runs as `sbx-user` and backing paths grant that account, such a shell can read and write **every other sandbox's mounts**. `git-bash` is the default shell, so `sbx start` logs a warning naming the shell whenever this applies. Non-Cygwin shells (`cmd`, `powershell`, `pwsh`) get the full restricted token and full isolation.
+
+For tokens that do carry restricted SIDs, the engine also sets null DACLs on the token's default DACL (`SetTokenInformation`) and on the token object itself (`SetKernelObjectSecurity`), so the restricted process can open its own token and create kernel objects.
 
 #### Host relay
 
