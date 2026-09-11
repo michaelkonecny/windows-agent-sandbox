@@ -130,8 +130,15 @@ def encode_console_records(records, terminal_size) -> bytes:
     return bytes(payload)
 
 
-def _pump_input(conin: int, conout: int, pipe_in: int) -> None:
-    """Terminal to sandbox: keystrokes as VT bytes, plus resize requests."""
+def _pump_input(conin: int, conout: int, handle) -> None:
+    """Terminal to sandbox: keystrokes as VT bytes, plus resize requests.
+
+    Reads the pipe off the handle each time rather than capturing it: this
+    thread sits in a blocking console read while the session ends around
+    it, and a captured handle number could be reused by the time the next
+    keypress wakes it. Once the handle is closed the field is zero and the
+    write fails harmlessly.
+    """
     from sbx import winapi
 
     def size():
@@ -148,6 +155,9 @@ def _pump_input(conin: int, conout: int, pipe_in: int) -> None:
         payload = encode_console_records(records, size)
         if not payload:
             continue
+        pipe_in = handle.pipe_in
+        if not pipe_in:
+            return  # the session ended while we were waiting for a key
         try:
             winapi.write_file(pipe_in, payload)
         except OSError:
@@ -184,7 +194,7 @@ def _interactive_session(handle) -> None:
         with _vt_console() as (conin, conout):
             threading.Thread(
                 target=_pump_input,
-                args=(conin, conout, handle.pipe_in),
+                args=(conin, conout, handle),
                 daemon=True,
             ).start()
             _pump_output(handle.pipe_out, conout)

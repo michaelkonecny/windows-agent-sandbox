@@ -535,6 +535,15 @@ def _execute_runner_inner(
     # pipe_out matters though: it is how the host learns the shell is
     # gone, via ERROR_BROKEN_PIPE on its reader.
     winapi.close_handle(proc_h)
-    for handle in (token, job, pty_in_write, pty_out_read, pipe_out):
-        winapi.close_handle(handle)
+    winapi.close_handle(token)
+    winapi.close_handle(job)
+    winapi.close_handle(pipe_out)
+
+    # Only once the relay that reads them has actually stopped. Closing a
+    # handle out from under a blocked thread risks the number being
+    # reused before that thread returns; process exit will release them.
+    if not relay_out.is_alive():
+        winapi.close_handle(pty_out_read)
+    if not relay_in.is_alive():
+        winapi.close_handle(pty_in_write)
     _log("runner cleanup done")

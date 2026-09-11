@@ -126,11 +126,17 @@ class ConPtyShell:
         winapi.close_pseudo_console(self._hpc)
         self._hpc = 0
 
+        reader_stopped = True
         if self._reader:
             self._reader.join(timeout=5)
+            reader_stopped = not self._reader.is_alive()
 
-        for handle in (self._pty_in_write, self._pty_out_read, self._process):
-            winapi.close_handle(handle)
+        winapi.close_handle(self._pty_in_write)
+        winapi.close_handle(self._process)
+        # Only once the reader has stopped: closing the handle it is
+        # blocked on risks the number being reused before it returns.
+        if reader_stopped:
+            winapi.close_handle(self._pty_out_read)
         self._pty_in_write = self._pty_out_read = self._process = 0
 
     def __enter__(self) -> ConPtyShell:
