@@ -248,7 +248,7 @@ The runner:
 4. Creates a named Job Object (`Global\sbx-job-{name}`) with kill-on-close and null DACL.
 5. Creates the restricted token (see Process launch above).
 6. Builds a `STARTUPINFOEX` with `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` pointing to the ConPTY handle.
-7. Launches the shell via `CreateProcessAsUserW` with the restricted token and attribute list. No `STARTF_USESTDHANDLES` — the ConPTY provides the console.
+7. Launches the shell via `CreateProcessAsUserW` with the restricted token and attribute list, passing `STARTF_USESTDHANDLES` with all three std handles NULL. A child that inherits std handles writes to them instead of to its pseudoconsole, so the explicit NULLs are what force it onto the console the ConPTY provides.
 8. Assigns the shell to the Job Object.
 9. Runs two relay threads: `named_pipe_in → pty_in_write` and `pty_out_read → named_pipe_out`. Both use blocking `ReadFile` — no polling.
 10. The input relay scans for a resize escape sequence (see Terminal resize), strips it, and calls `ResizePseudoConsole`.

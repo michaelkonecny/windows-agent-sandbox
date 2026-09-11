@@ -91,8 +91,8 @@ Role: set up and tear down filesystem isolation for a sandbox.
 
 Role: create restricted tokens for sandbox processes.
 
-- Holds: restricted token creation (`CreateRestrictedToken` with `DISABLE_MAX_PRIVILEGE`), RestrictedSids list assembly (`[per_sandbox_sid, BUILTIN\Users]`).
-- Notes: called by the runner (inside the `sbx-user` logon session), not by the engine CLI directly. The token is a primary token suitable for `CreateProcessAsUser`.
+- Holds: restricted token creation (`CreateRestrictedToken` with `DISABLE_MAX_PRIVILEGE`), RestrictedSids list assembly (`[per_sandbox_sid, BUILTIN\Users, Everyone]`), null DACLs on the token object and on its default DACL.
+- Notes: called by the runner (inside the `sbx-user` logon session), not by the engine CLI directly. The token is a primary token suitable for `CreateProcessAsUser`. `Everyone` is in the list to avoid `STATUS_DLL_INIT_FAILED`. Cygwin/MSYS2 shells instead get `DISABLE_MAX_PRIVILEGE` only and an empty RestrictedSids list — their init touches session-local kernel objects whose DACLs we do not control — so they keep privilege stripping but lose synthetic-SID filesystem isolation.
 - Depends on: winapi (token APIs, SID APIs).
 
 ### network
@@ -100,6 +100,7 @@ Role: create restricted tokens for sandbox processes.
 Role: manage WFP rules and the proxy lifecycle.
 
 - Holds: WFP rule installation/removal (scoped to `sbx-user`'s SID, block all egress except loopback to proxy port), proxy start/stop, PID→policy registration/deregistration with the proxy.
+- Note: rules go in via PowerShell `New-NetFirewallRule -LocalUser` (an SDDL string), not the ctypes WFP APIs; `netsh` offers no per-user scoping.
 - Notes: WFP rules are static — installed once during `install`, removed during `uninstall`. They never change per sandbox. Per-sandbox network policy is purely a proxy concern. The proxy is started lazily on first `start` if not already running.
 - Depends on: winapi (WFP APIs), proxy (lifecycle management).
 
@@ -108,7 +109,7 @@ Role: manage WFP rules and the proxy lifecycle.
 Role: launch and manage sandboxed shell processes via the command runner pattern, with full interactive terminal support via ConPTY.
 
 - Holds: runner launch (`CreateProcessWithLogonW` to re-invoke engine as `sbx-user`), named Job Object creation, ConPTY pseudo-console creation and management, I/O relay between the CLI terminal and the runner's PTY, PID tracking, process termination, re-invocation command line construction.
-- Notes: the runner creates a named Job Object (`sbx-job-<sandbox-name>`) with a security descriptor granting the host user read access, then creates a ConPTY and attaches the sandboxed shell to both. The Job Object ensures all child processes (anything the user launches from the shell) inherit membership — this is how the proxy identifies which sandbox a connecting process belongs to. ConPTY gives proper terminal emulation — ANSI escapes, line editing, tab completion, Ctrl+C handling, window resize. The engine CLI side relays between its own console and the PTY's I/O pipes. On stop, the engine terminates the Job Object (which kills the shell and all its children).
+- Notes: the runner creates a named Job Object (`sbx-job-<sandbox-name>`) with a security descriptor granting the host user read access, then creates a ConPTY and attaches the sandboxed shell to both. The Job Object ensures all child processes (anything the user launches from the shell) inherit membership — this is how the proxy identifies which sandbox a connecting process belongs to. ConPTY gives proper terminal emulation — ANSI escapes, line editing, tab completion, window resize. Ctrl+C is the exception: an `0x03` byte on the pseudoconsole's input pipe does not become a `CTRL_C_EVENT` for the client, so a running command is not interrupted (see `notes-2.md`). Host and runner run under different accounts, so two null-DACL named pipes carry VT bytes between them; the engine CLI side relays between its own console and those pipes, and resize requests travel in band on the input pipe as a private OSC sequence. On stop, the engine terminates the Job Object (which kills the shell and all its children).
 - Trust boundary: this module's code runs in two contexts — engine CLI side (host user, unprivileged) handles runner launch and I/O relay; runner side (`sbx-user`) handles token creation, Job Object setup, and shell spawn. Same pattern as the elevation module.
 - Depends on: winapi (process APIs, ConPTY APIs, Job Object APIs), tokens (called by the runner side), identity (reads credentials for `CreateProcessWithLogonW`), store (registers/deregisters PIDs).
 
@@ -222,7 +223,7 @@ class Engine:
     def status(sandbox: str) -> SandboxStatus  # name or project path
 ```
 
-`StartHandle` — opaque handle the CLI uses to relay I/O and wait for shell exit. Holds the runner process handle and the relay streams.
+`StartHandle` — opaque handle the CLI uses to relay I/O and wait for shell exit. Holds the runner process handle and the two named-pipe handles carrying VT bytes to and from the runner.
 
 `SandboxInfo` / `SandboxStatus` — frozen dataclasses. Status is a superset of info (adds live PID, resource usage).
 
@@ -343,7 +344,7 @@ def create_sandbox_token(
 ) -> int:                      # token HANDLE
 ```
 
-Called inside the runner (running as `sbx-user`). Opens the runner's own process token, creates a restricted token with `RestrictedSids = [sandbox_sid, BUILTIN\Users]` and `DISABLE_MAX_PRIVILEGE`. Returns the token handle for `CreateProcessAsUser`.
+Called inside the runner (running as `sbx-user`). Opens the runner's own process token, creates a restricted token with `RestrictedSids = [sandbox_sid, BUILTIN\Users, Everyone]` and `DISABLE_MAX_PRIVILEGE`. Takes `skip_restricted_sids=True` for Cygwin/MSYS2 shells. Returns the token handle for `CreateProcessAsUser`.
 
 ### network → proxy
 
@@ -399,10 +400,13 @@ All paths are `pathlib.Path` objects internally. SIDs are strings (`S-1-...`) ex
 - Proxy ↔ engine communication — local TCP socket. Python asyncio has clean TCP support; Windows named pipes are fiddly in Python.
 - Store locking — file-level lock (`msvcrt.locking`).
 - Process tree tracking — Job Objects. Runner creates a named Job Object (`sbx-job-<sandbox-name>`), shell and all children inherit membership. Proxy opens the Job Object by name and calls `IsProcessInJob` to identify which sandbox a connecting process belongs to. Security descriptor on the Job Object grants read access to the host user.
+- `CreateProcessAsUser` for spawning the shell from the runner — works from the same logon session and with ConPTY, covered by the integration and system tests.
+- ConPTY resize propagation — the CLI reads `WINDOW_BUFFER_SIZE_EVENT` from its console input and sends `\x1b]9999;<cols>;<rows>\x07` on the input pipe; the runner strips it and calls `ResizePseudoConsole`.
 - Packaging — develop as a pip-installable package (`python -m sbx`), decide final packaging later. The process module holds the re-invocation command line in a single configurable point so swapping to a PyInstaller exe is a one-line change.
 
 ## Open decisions
 
 - TUI framework — Textual or similar. Deferred per spec.
-- `CreateProcessAsUser` vs. `CreateProcessWithTokenW` for spawning the shell from the runner — both should work from the same logon session. Needs a PoC to confirm which plays better with ConPTY.
-- ConPTY window resize propagation — the engine CLI needs to detect its own console resize events and forward them to the pseudo-console via `ResizePseudoConsole`. Straightforward but needs testing across shell types.
+- Whether the sandbox shell should inherit the host process's environment. It currently does, so host state such as `PROMPT` leaks in.
+- How Ctrl+C should reach the sandbox shell, given ConPTY will not deliver it (see `notes-2.md`).
+- Whether `setup_mounts` should grant `sbx-user` on backing paths as well as the synthetic SID — without it a mount is unreadable from inside its own sandbox (see `notes-2.md`).
