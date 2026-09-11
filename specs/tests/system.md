@@ -8,6 +8,16 @@ All tests use `ConPtyShell` (see Integration test infrastructure in spec.md).
 Each test gets a unique sandbox name (UUID-based). Timeouts: 10–15s for initial
 shell prompt, 5s for command output unless noted otherwise.
 
+Status — everything here except Network isolation is implemented in
+`tests/test_system.py`. Network isolation waits on a verified proxy and WFP
+rule set. Scenarios corrected against what the implementation found are
+marked *Corrected* below; `specs/notes-2.md` has the detail.
+
+Both shells are cmd and their prompts are indistinguishable, so each test
+renames the sandbox's prompt to `SBX>` on entry and treats a drive-letter
+prompt as the host. Renaming the host's instead does not work — the sandbox
+inherits the host environment, `PROMPT` included.
+
 ## Filesystem isolation
 
 ### Mount read/write
@@ -96,13 +106,19 @@ Verifies: Network mechanism → Safe defaults (proxy crash or unavailability)
 ### Privileges stripped
 Verifies: Filesystem mechanism → Restricted tokens and synthetic SIDs
 1. Start sandbox.
-2. `whoami /priv` — expect most privileges absent or disabled (result of `DISABLE_MAX_PRIVILEGE`).
+2. *Corrected*: `whoami` cannot run at all once `DISABLE_MAX_PRIVILEGE` has
+   stripped privileges, so it cannot report them. Observe the effect instead:
+   writing to `C:\Users\sbx-user\` is denied, because that DACL grants the
+   account but none of the token's restricted SIDs and both checks must pass.
 
 ### Cannot kill host processes
 Verifies: token isolation
 1. Note the PID of a host-side process (e.g. the test harness itself).
 2. Start sandbox.
-3. `taskkill /F /PID {host_pid}` — expect "Access is denied."
+3. `taskkill /F /PID {host_pid}` — expect a failure, and confirm the target
+   survives. *Corrected*: the message is "Not enough memory resources are
+   available to complete this operation", which is Windows reporting a denial
+   misleadingly. Target a throwaway process, never the test runner.
 
 ### Cannot create users
 Verifies: token isolation
@@ -139,7 +155,7 @@ Verifies: Shell integration mechanism (full chain)
 2. Wait for host prompt.
 3. Type `sbx start --name {name} --shell cmd`.
 4. Wait for sandbox prompt.
-5. `whoami` — expect `sbx-user`.
+5. *Corrected*: `echo %username%` — expect `sbx-user`. `whoami` cannot run under the restricted token.
 6. `exit`.
 7. Wait for host prompt — confirm it returns.
 
@@ -151,6 +167,13 @@ Verifies: Shell integration mechanism → ConPTY
 4. Send `\x03` (Ctrl+C).
 5. Expect ping stops, prompt reappears.
 6. `echo OK` — expect `OK` (shell still alive).
+
+*Does not pass.* Kept as a strict xfail so it fails loudly if it ever
+starts working. ConPTY does not turn an `0x03` byte on its input pipe into
+a `CTRL_C_EVENT` for the attached client, reproduced with no sandbox in the
+picture. Borrowing the console to call `GenerateConsoleCtrlEvent` and
+forcing `ENABLE_PROCESSED_INPUT` (already set) were both ruled out too —
+see `specs/notes-2.md`. Needs a design decision.
 
 ### Interactive program — cursor and colour
 Verifies: Shell integration mechanism → ConPTY
@@ -195,7 +218,7 @@ Verifies: Shell integration mechanism → Cygwin/MSYS2 shells
 Verifies: Sandbox lifecycle (all steps)
 1. `sbx install` (or verify already installed).
 2. `sbx create` from a project with config.
-3. `sbx start` — wait for sandbox prompt, run `whoami`, exit.
+3. `sbx start` — wait for the sandbox prompt, run `echo %username%`, exit.
 4. `sbx stop`.
 5. `sbx destroy` — verify bind links removed, Job Object gone, mount ACLs cleaned up.
 6. `sbx create` again (same project) — should succeed (no leftover state).
@@ -206,7 +229,11 @@ Verifies: Sandbox lifecycle (all steps)
 Verifies: Edge cases
 1. Start sandbox.
 2. From a second ConPTY session, try `sbx start` with the same sandbox name.
-3. Expect a clear error (e.g. "already running" or named pipe collision).
+3. Expect a clear error naming the sandbox.
+
+Originally failed silently — the second runner connects to the first host's
+named pipes, so the second host waits for a connection that never arrives.
+`engine.start` now refuses when the sandbox's Job Object already exists.
 
 ### Start after stop
 Verifies: Sandbox lifecycle → Start, Stop

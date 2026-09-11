@@ -73,14 +73,27 @@ Verifies: Network mechanism → Per preset (none)
 
 ## Token
 
+`whoami` is the obvious way to inspect a token and is not available here:
+`DISABLE_MAX_PRIVILEGE` strips the privileges it needs, so it fails with
+"Access is denied" inside the sandbox. These scenarios therefore check what
+the token *does* rather than what it reports. The token's contents are
+asserted directly in `tests/test_tokens.py`, which holds the handle.
+
 ### Restricted token applied
 Verifies: Filesystem mechanism → Restricted tokens and synthetic SIDs
 1. Start sandbox.
-2. Send `whoami /priv\r\n`.
-3. Read output — expect privileges are absent or disabled.
+2. Send `echo probe > C:\Users\sbx-user\sbx-token-probe.txt`.
+3. Expect "Access is denied" — the sandbox user cannot write its own home
+   directory, because that DACL grants the account but none of the token's
+   restricted SIDs, and a fully restricted token must pass both checks.
 
-### Sandbox SID in token
+### System paths still reachable
 Verifies: Filesystem mechanism → Restricted tokens and synthetic SIDs
-1. Start sandbox with a known `sandbox_sid`.
-2. Send `whoami /groups\r\n`.
-3. Read output — expect the sandbox SID appears in the restricted SIDs list.
+1. Start sandbox.
+2. Send `type C:\Windows\System32\drivers\etc\hosts`.
+3. Expect the file contents and no denial — `BUILTIN\Users` sits in the
+   token's restricted SIDs, which is what keeps system paths readable.
+
+Cross-sandbox isolation, the other half of what the synthetic SID buys, is
+covered at the system level where two real sandboxes exist:
+`tests/test_system.py::test_one_sandbox_cannot_read_anothers_mount`.
