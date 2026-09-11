@@ -3,6 +3,39 @@
 Deviations from `specs/plan.md` and things found along the way.
 Earlier iterations' notes are in `notes-1.md`.
 
+## Start here
+
+The iteration shipped: the sandbox shell runs in a real pseudoconsole, and
+`sbx start` behaves like a terminal — colour, cursor addressing, resize,
+interactive programs. The previous iteration had abandoned ConPTY as
+unworkable; it was two bugs, both ours (see Why ConPTY works now).
+
+Read in this order:
+
+- Follow-ups — six things need your decision. The first, git-bash
+  sandboxes reaching every other sandbox's mounts, is the widest hole and
+  git-bash is the default shell.
+- AFK decisions — four calls taken without you, each its own commit and
+  each revertible on its own.
+- Verified behaviour that contradicts the spec — two scenarios kept as
+  strict xfails, so they fail loudly the day they start working.
+
+Three findings deserve attention beyond the tests:
+
+- Network policy has one enforcement layer, not three. WFP rules are never
+  installed and the proxy never inspects the SNI, so a sandbox that
+  ignores `HTTPS_PROXY` has unrestricted egress, and one that honours it
+  is filtered on a header it controls.
+- A Cygwin shell has no synthetic SID, and backing paths now grant
+  `sbx-user`, so git-bash sandboxes can read and write each other's
+  mounts. `sbx start` warns; nothing stops it.
+- System paths are reachable through `BUILTIN\Users`, which is in every
+  restricted token. That makes "read-only" intent rather than enforcement
+  — `C:\Windows\Temp` is writable and shared between sandboxes.
+
+Everything else here is either fixed with a test or recorded as a
+follow-up. Nothing is left half-done.
+
 ## Why ConPTY works now
 
 `notes-1.md` records ConPTY being abandoned after it produced zero output,
