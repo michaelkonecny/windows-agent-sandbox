@@ -165,13 +165,59 @@ def test_child_inherits_job_object(
 
 
 @pytest.mark.integration
-def test_conpty_relay(sandbox_name, sandbox_sid, credentials_path):
+def test_echo_roundtrip(sandbox_name, sandbox_sid, credentials_path):
+    """Bytes written to the input pipe reach the shell and its output
+    comes back on the output pipe."""
     handle = _start(sandbox_name, sandbox_sid, credentials_path)
     try:
         _read_output(handle, timeout=5)
         _send_command(handle, "echo RELAY_TEST_OUTPUT")
         output = _read_output(handle, timeout=5)
         assert b"RELAY_TEST_OUTPUT" in output
+    finally:
+        stop_sandbox(sandbox_name)
+        winapi.wait_for_process(handle.runner_process)
+        handle.close()
+
+
+@pytest.mark.integration
+def test_restricted_token_applied(sandbox_name, sandbox_sid, credentials_path):
+    """The shell really runs under the fully restricted token, not just
+    as sbx-user.
+
+    The sandbox user's own home directory is the observable: its DACL
+    grants sbx-user but none of the token's restricted SIDs, and a fully
+    restricted token needs both checks to pass — so the account that owns
+    the directory cannot write to it.  `whoami /priv` would be the direct
+    check but is itself unusable once privileges are stripped.
+    """
+    handle = _start(sandbox_name, sandbox_sid, credentials_path)
+    try:
+        _read_output(handle, timeout=10)
+        _send_command(
+            handle, r"echo probe > C:\Users\sbx-user\sbx-token-probe.txt"
+        )
+        output = _read_output(handle, timeout=5)
+        assert b"denied" in output.lower(), output
+    finally:
+        stop_sandbox(sandbox_name)
+        winapi.wait_for_process(handle.runner_process)
+        handle.close()
+
+
+@pytest.mark.integration
+def test_system_paths_still_reachable(
+    sandbox_name, sandbox_sid, credentials_path
+):
+    """The restriction is not blanket: BUILTIN\\Users sits in the token's
+    restricted SIDs, so paths whose DACL grants that group stay readable
+    and the shell can still run the tools it needs."""
+    handle = _start(sandbox_name, sandbox_sid, credentials_path)
+    try:
+        _read_output(handle, timeout=10)
+        _send_command(handle, r"type C:\Windows\System32\drivers\etc\hosts")
+        output = _read_output(handle, timeout=5)
+        assert b"denied" not in output.lower(), output
     finally:
         stop_sandbox(sandbox_name)
         winapi.wait_for_process(handle.runner_process)

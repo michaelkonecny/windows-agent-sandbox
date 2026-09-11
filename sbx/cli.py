@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import click
@@ -12,51 +13,160 @@ from sbx.errors import SandboxError
 log = logging.getLogger(__name__)
 
 
-def _interactive_session(handle) -> None:
-    """Relay stdin/stdout between the terminal and the sandboxed shell."""
-    import msvcrt
-    import threading
+RELAY_BUF = 4096
 
+
+def _terminal_size() -> tuple[int, int]:
+    """The user's terminal size, measured from CONOUT$ so that redirected
+    stdout does not hide it."""
     from sbx import winapi
-
-    stop = threading.Event()
-
-    def _read_output():
-        while not stop.is_set():
-            try:
-                avail = winapi.peek_pipe(handle.pipe_out)
-            except OSError:
-                break
-            if avail > 0:
-                try:
-                    data = winapi.read_file(handle.pipe_out, min(avail, 4096))
-                    sys.stdout.buffer.write(data)
-                    sys.stdout.buffer.flush()
-                except OSError:
-                    break
-            else:
-                stop.wait(0.02)
-
-    output_thread = threading.Thread(target=_read_output, daemon=True)
-    output_thread.start()
+    from sbx.process import DEFAULT_SIZE
 
     try:
-        while not stop.is_set():
-            if msvcrt.kbhit():
-                ch = msvcrt.getwch()
-                if ch == "\r":
-                    ch = "\r\n"
-                try:
-                    winapi.write_file(handle.pipe_in, ch.encode("utf-8"))
-                except OSError:
-                    break
-            else:
-                stop.wait(0.02)
-    except KeyboardInterrupt:
-        pass
+        conout = winapi.open_file("CONOUT$", winapi.GENERIC_READ, share=3)
+    except OSError:
+        return DEFAULT_SIZE
+    try:
+        return winapi.get_console_screen_buffer_info(conout)
+    except OSError:
+        return DEFAULT_SIZE
     finally:
-        stop.set()
-        output_thread.join(timeout=2)
+        winapi.close_handle(conout)
+
+
+@contextmanager
+def _vt_console():
+    """Put the real console into VT mode for the duration of a session.
+
+    Opens CONIN$/CONOUT$ rather than the std handles, so the relay still
+    works when stdio is redirected.  Restoring both modes is not optional:
+    a console left in VT input mode stays broken for the rest of the
+    terminal session, long after this process is gone.
+
+    A terminal that refuses VT input still gets VT output — basic typing
+    works, keys that need escape sequences do not.
+    """
+    from sbx import winapi
+
+    access = winapi.GENERIC_READ | winapi.GENERIC_WRITE
+    conin = winapi.open_file("CONIN$", access, share=3)
+    try:
+        conout = winapi.open_file("CONOUT$", access, share=3)
+    except OSError:
+        winapi.close_handle(conin)
+        raise
+
+    in_mode = winapi.get_console_mode(conin)
+    out_mode = winapi.get_console_mode(conout)
+    try:
+        # No ENABLE_PROCESSED_INPUT: Ctrl+C must reach the sandbox as a
+        # byte rather than raising a control event in this process.
+        try:
+            winapi.set_console_mode(
+                conin,
+                winapi.ENABLE_VIRTUAL_TERMINAL_INPUT
+                | winapi.ENABLE_WINDOW_INPUT,
+            )
+        except OSError as e:
+            log.warning("terminal does not support VT input: %s", e)
+        winapi.set_console_mode(
+            conout, out_mode | winapi.ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        )
+        yield conin, conout
+    finally:
+        try:
+            winapi.set_console_mode(conin, in_mode)
+            winapi.set_console_mode(conout, out_mode)
+        finally:
+            winapi.close_handle(conin)
+            winapi.close_handle(conout)
+
+
+def encode_console_records(records, terminal_size) -> bytes:
+    """Translate console input events into bytes for the sandbox shell.
+
+    terminal_size is a callable, consulted only when a resize event
+    arrives: the event itself reports the screen buffer, whereas the
+    shell needs the visible window size.
+    """
+    from sbx import winapi
+    from sbx.process import resize_request
+
+    payload = bytearray()
+    for record in records:
+        if record.EventType == winapi.KEY_EVENT:
+            key = record.Event.KeyEvent
+            # With VT input mode the console hands us the escape sequence
+            # itself, one character per key-down record.  Key-up records
+            # and pure modifiers carry no character.
+            if key.bKeyDown and key.UnicodeChar != "\x00":
+                payload += key.UnicodeChar.encode("utf-8")
+        elif record.EventType == winapi.WINDOW_BUFFER_SIZE_EVENT:
+            size = terminal_size()
+            if size is not None:
+                payload += resize_request(*size)
+    return bytes(payload)
+
+
+def _pump_input(conin: int, conout: int, pipe_in: int) -> None:
+    """Terminal to sandbox: keystrokes as VT bytes, plus resize requests."""
+    from sbx import winapi
+
+    def size():
+        try:
+            return winapi.get_console_screen_buffer_info(conout)
+        except OSError:
+            return None
+
+    while True:
+        try:
+            records = winapi.read_console_input(conin)
+        except OSError:
+            return
+        payload = encode_console_records(records, size)
+        if not payload:
+            continue
+        try:
+            winapi.write_file(pipe_in, payload)
+        except OSError:
+            return
+
+
+def _pump_output(pipe_out: int, conout: int) -> None:
+    """Sandbox to terminal.  Returns once the shell is gone."""
+    from sbx import winapi
+
+    while True:
+        try:
+            data = winapi.read_file(pipe_out, RELAY_BUF)
+        except OSError:
+            return  # ERROR_BROKEN_PIPE once the runner closes its end
+        if not data:
+            return
+        try:
+            winapi.write_file(conout, data)
+        except OSError:
+            return
+
+
+def _interactive_session(handle) -> None:
+    """Bridge the user's terminal and the sandboxed shell.
+
+    The output pump runs on this thread: its end means the shell exited,
+    which is exactly when the session should finish.  Input is a daemon
+    thread parked in a blocking console read, abandoned at that point.
+    """
+    import threading
+
+    try:
+        with _vt_console() as (conin, conout):
+            threading.Thread(
+                target=_pump_input,
+                args=(conin, conout, handle.pipe_in),
+                daemon=True,
+            ).start()
+            _pump_output(handle.pipe_out, conout)
+    finally:
         handle.close()
 
 
@@ -113,7 +223,8 @@ def create(ctx: click.Context, config_path: str, name: str | None) -> None:
 @click.argument("project_path", default=".")
 @click.pass_context
 def start(ctx: click.Context, project_path: str) -> None:
-    handle = _engine(ctx).start(project_path)
+    cols, rows = _terminal_size()
+    handle = _engine(ctx).start(project_path, cols=cols, rows=rows)
     _interactive_session(handle)
 
 

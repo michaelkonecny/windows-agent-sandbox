@@ -30,6 +30,14 @@ DEFAULT_SIZE = (120, 30)
 RESIZE_OSC = re.compile(rb"\x1b\]9999;(\d+);(\d+)\x07")
 
 
+def resize_request(cols: int, rows: int) -> bytes:
+    """The in-band message the host sends to resize the pseudoconsole.
+
+    Both sides go through here so the wire format cannot drift.
+    """
+    return f"\x1b]9999;{cols};{rows}\x07".encode()
+
+
 def host_terminal_size() -> tuple[int, int]:
     """The host console's visible size, or DEFAULT_SIZE if there is none."""
     try:

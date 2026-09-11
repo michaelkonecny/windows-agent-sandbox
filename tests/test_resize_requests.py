@@ -3,11 +3,7 @@ has to pull them out of the keystroke stream without corrupting it."""
 
 from __future__ import annotations
 
-from sbx.process import RESIZE_OSC, split_resize_requests
-
-
-def resize(cols: int, rows: int) -> bytes:
-    return f"\x1b]9999;{cols};{rows}\x07".encode()
+from sbx.process import RESIZE_OSC, resize_request as resize, split_resize_requests
 
 
 def test_plain_input_passes_through():

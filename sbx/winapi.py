@@ -907,6 +907,36 @@ class SMALL_RECT(ctypes.Structure):
     ]
 
 
+class KEY_EVENT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("bKeyDown", wintypes.BOOL),
+        ("wRepeatCount", wintypes.WORD),
+        ("wVirtualKeyCode", wintypes.WORD),
+        ("wVirtualScanCode", wintypes.WORD),
+        # Union of WCHAR/CHAR in the SDK; we only read the wide form.
+        ("UnicodeChar", ctypes.c_wchar),
+        ("dwControlKeyState", wintypes.DWORD),
+    ]
+
+
+class WINDOW_BUFFER_SIZE_RECORD(ctypes.Structure):
+    _fields_ = [("dwSize", COORD)]
+
+
+class INPUT_RECORD_EVENT(ctypes.Union):
+    _fields_ = [
+        ("KeyEvent", KEY_EVENT_RECORD),
+        ("WindowBufferSizeEvent", WINDOW_BUFFER_SIZE_RECORD),
+    ]
+
+
+class INPUT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("EventType", wintypes.WORD),
+        ("Event", INPUT_RECORD_EVENT),
+    ]
+
+
 class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
     _fields_ = [
         ("dwSize", COORD),
@@ -987,6 +1017,12 @@ kernel32.GetConsoleScreenBufferInfo.argtypes = [
     wintypes.HANDLE, ctypes.POINTER(CONSOLE_SCREEN_BUFFER_INFO),
 ]
 kernel32.GetConsoleScreenBufferInfo.restype = wintypes.BOOL
+
+kernel32.ReadConsoleInputW.argtypes = [
+    wintypes.HANDLE, ctypes.POINTER(INPUT_RECORD),
+    wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+]
+kernel32.ReadConsoleInputW.restype = wintypes.BOOL
 
 kernel32.CreateProcessW.argtypes = [
     wintypes.LPCWSTR, wintypes.LPWSTR,
@@ -1258,6 +1294,18 @@ def get_console_screen_buffer_info(handle: int) -> tuple[int, int]:
     cols = info.srWindow.Right - info.srWindow.Left + 1
     rows = info.srWindow.Bottom - info.srWindow.Top + 1
     return cols, rows
+
+
+def read_console_input(handle: int, max_records: int = 32) -> list[INPUT_RECORD]:
+    """ReadConsoleInputW — blocks until at least one event is available."""
+    buf = (INPUT_RECORD * max_records)()
+    count = wintypes.DWORD()
+    ok = kernel32.ReadConsoleInputW(
+        handle, buf, max_records, ctypes.byref(count)
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return list(buf[:count.value])
 
 
 def peek_pipe(handle: int) -> int:
