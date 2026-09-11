@@ -11,11 +11,12 @@ from sbx.cli import encode_console_records
 from sbx.process import resize_request
 
 
-def key(char: str, down: bool = True) -> winapi.INPUT_RECORD:
+def key(char: str, down: bool = True, repeats: int = 1) -> winapi.INPUT_RECORD:
     record = winapi.INPUT_RECORD()
     record.EventType = winapi.KEY_EVENT
     record.Event.KeyEvent.bKeyDown = down
     record.Event.KeyEvent.UnicodeChar = char
+    record.Event.KeyEvent.wRepeatCount = repeats
     return record
 
 
@@ -78,3 +79,13 @@ def test_resize_is_interleaved_with_keystrokes_in_order():
 def test_unavailable_terminal_size_is_skipped():
     records = [key("a"), resize_event(), key("b")]
     assert encode_console_records(records, lambda: None) == b"ab"
+
+
+def test_a_held_key_is_repeated():
+    """The console coalesces auto-repeat into one record with a count;
+    ignoring it would swallow every repeat but the first."""
+    assert encode_console_records([key("x", repeats=5)], no_size) == b"xxxxx"
+
+
+def test_a_zero_repeat_count_still_sends_the_key():
+    assert encode_console_records([key("x", repeats=0)], no_size) == b"x"

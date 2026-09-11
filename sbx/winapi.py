@@ -788,8 +788,8 @@ def shell_execute_elevated(file: str, params: str) -> int:
     return sei.hProcess
 
 
+WAIT_OBJECT_0 = 0x00000000
 WAIT_TIMEOUT = 0x00000102
-STILL_ACTIVE = 259
 
 
 def wait_for_process(handle: int, timeout_ms: int = INFINITE) -> int:
@@ -805,9 +805,13 @@ def wait_for_process(handle: int, timeout_ms: int = INFINITE) -> int:
 
 
 def process_is_running(handle: int) -> bool:
-    exit_code = wintypes.DWORD()
-    kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-    return exit_code.value == STILL_ACTIVE
+    """Whether the process is still running.
+
+    Waits with a zero timeout rather than comparing the exit code against
+    STILL_ACTIVE: that value is just 259, so a process that genuinely
+    exits with 259 would otherwise look like it were still going.
+    """
+    return kernel32.WaitForSingleObject(handle, 0) != WAIT_OBJECT_0
 
 
 def terminate_process(handle: int, exit_code: int = 1) -> None:

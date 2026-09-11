@@ -122,7 +122,10 @@ def encode_console_records(records, terminal_size) -> bytes:
             # itself, one character per key-down record.  Key-up records
             # and pure modifiers carry no character.
             if key.bKeyDown and key.UnicodeChar != "\x00":
-                payload += key.UnicodeChar.encode("utf-8")
+                # A held key is coalesced into one record with a count,
+                # so dropping it would swallow every repeat but the first.
+                repeats = max(1, key.wRepeatCount)
+                payload += key.UnicodeChar.encode("utf-8") * repeats
         elif record.EventType == winapi.WINDOW_BUFFER_SIZE_EVENT:
             size = terminal_size()
             if size is not None:

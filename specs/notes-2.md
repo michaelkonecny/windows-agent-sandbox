@@ -127,6 +127,42 @@ Left here for the record; the fix is described under AFK decisions below.
   Reinstating it is a real decision about the filesystem mechanism, and a
   sandbox does need *somewhere* writable for temp files.
 
+## Review pass
+
+A read-only review of the branch turned up bugs no test had reached,
+mostly around ctypes and handle lifetimes. Each is fixed with a test.
+
+- `read_file` dropped every byte above 0x7f. Its buffer was `c_byte`,
+  which is signed, so `bytes()` rejected the negative ints — `ValueError`,
+  not `OSError`, which none of the three relays catch. Any accented
+  character would have killed the relay thread and left the terminal
+  silent with the shell still running. Nothing hit it because ConPTY's
+  escapes and cmd's banner are pure ASCII.
+- Console output stayed on the OEM codepage (437 here) while the
+  pseudoconsole emits UTF-8, so non-ASCII would have rendered as
+  mojibake even after the above.
+- Holding a partial escape sequence was unbounded on both sides. In the
+  runner this was reachable and silent: anything starting `ESC ]` was
+  held until a terminator arrived, so Alt+] left every later keystroke
+  accumulating and the sandbox keyboard dead. Now only a fragment that
+  could still become a resize request is held.
+- The start timeout path left the runner alive. It owns the kill-on-close
+  Job Object, so the sandbox looked running forever and the new
+  already-running guard then refused every start — a trap the guard
+  itself created.
+- `StartHandle.close` was not idempotent, `mounts.destroy` could abort
+  mid-teardown on a missing account, backing paths were compared as raw
+  strings despite Windows path case-insensitivity, and three relays
+  closed handles a blocked thread still held.
+- `process_is_running` compared the exit code against `STILL_ACTIVE`,
+  which is just 259 — a process genuinely exiting with 259 looked alive.
+- Auto-repeat was dropped: the console coalesces a held key into one
+  record with a count, and only one character was sent.
+
+Checked and found clean: every new ctypes prototype and struct layout
+against the SDK, the dangling-pointer class that caused the original
+ConPTY bug, and handle cleanup on the main ConPTY paths.
+
 ## Also worth knowing
 
 - The sandbox shell inherits the host process's environment. `PROMPT` set

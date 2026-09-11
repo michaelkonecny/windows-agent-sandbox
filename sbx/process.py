@@ -310,7 +310,9 @@ def execute_runner(
     SEM_NOGPFAULTERRORBOX = 0x0002
     ctypes.windll.kernel32.SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)
 
-    log_path = Path(r"C:\Users\Public") / "sbx-runner.log"
+    # Named per sandbox: concurrent sandboxes would otherwise truncate
+    # each other's diagnostics, which is exactly when they are wanted.
+    log_path = Path(r"C:\Users\Public") / f"sbx-runner-{sandbox_name}.log"
     _log_file = None
     try:
         _log_file = open(log_path, "w", encoding="utf-8")
