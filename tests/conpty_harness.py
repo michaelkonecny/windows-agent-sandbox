@@ -35,6 +35,11 @@ VT_SEQUENCE = re.compile(
 READ_CHUNK = 4096
 DEFAULT_TIMEOUT = 10.0
 
+# Longest tail held back waiting for an escape sequence to finish. Real
+# sequences are far shorter; the cap is what stops an unrecognised one
+# (DCS, APC, a sixel image) swallowing the rest of the stream forever.
+MAX_HELD = 64
+
 # cmd and powershell prompts end in ">", bash in "$".
 DEFAULT_PROMPT = r"[>$]\s*$"
 
@@ -161,7 +166,11 @@ class ConPtyShell:
         text = self._held + self._decoder.decode(chunk)
 
         escape = text.rfind("\x1b")
-        if escape != -1 and not VT_SEQUENCE.match(text, escape):
+        if (
+            escape != -1
+            and not VT_SEQUENCE.match(text, escape)
+            and len(text) - escape < MAX_HELD
+        ):
             text, self._held = text[:escape], text[escape:]
         elif text.endswith("\r"):
             text, self._held = text[:-1], "\r"

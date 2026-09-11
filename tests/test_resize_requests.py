@@ -78,13 +78,31 @@ def test_unrelated_osc_sequence_is_forwarded():
     assert split_resize_requests(data) == (data, [], b"")
 
 
-def test_partial_unrelated_osc_is_held_not_truncated():
-    payload, resizes, held = split_resize_requests(b"ls\x1b]0;tit")
-    assert payload == b"ls"
+def test_partial_unrelated_osc_is_forwarded_immediately():
+    """Only a fragment that could still become a resize request is worth
+    holding.  Anything else goes straight through: forwarding it in two
+    pieces costs nothing, since the shell reads a byte stream."""
+    data = b"ls\x1b]0;tit"
+    assert split_resize_requests(data) == (data, [], b"")
+
+
+def test_a_fragment_is_never_held_indefinitely():
+    """The bug this guards against: hold anything starting with ESC-] and
+    a stray Alt+] silently swallows every later keystroke, leaving the
+    sandbox's keyboard dead with nothing logged."""
+    payload, resizes, held = split_resize_requests(b"\x1b]")
+    assert held == b"\x1b]", "a real resize prefix should still be held"
+
+    # Whatever arrives next either completes the request or frees it.
+    payload, resizes, held = split_resize_requests(held + b"hello world")
+    assert held == b""
+    assert payload == b"\x1b]hello world"
     assert resizes == []
-    assert held == b"\x1b]0;tit"
-    # and completing it forwards the whole sequence
-    payload2, resizes2, held2 = split_resize_requests(held + b"le\x07")
-    assert payload2 == b"\x1b]0;title\x07"
-    assert resizes2 == []
-    assert held2 == b""
+
+
+def test_a_long_run_of_digits_is_not_held_forever():
+    """Bounded even when every byte looks plausible."""
+    fragment = b"\x1b]9999;" + b"1" * 64
+    payload, resizes, held = split_resize_requests(fragment)
+    assert held == b""
+    assert payload == fragment

@@ -77,3 +77,46 @@ def test_screen_text_renders_cursor_addressing():
         # which is the whole reason pyte is here.
         assert "Microsoft Windows" in sh.read_all()
         assert "Microsoft Windows" not in rendered
+
+
+# ── escape stripping, exercised without a live shell ─────────
+
+
+def offline_shell() -> ConPtyShell:
+    """A harness instance that is never started — enough to feed bytes
+    through the escape stripping."""
+    return ConPtyShell("cmd.exe")
+
+
+def test_escape_split_across_reads_is_still_stripped():
+    sh = offline_shell()
+    sh._feed(b"a\x1b[")
+    sh._feed(b"31mred")
+    assert sh.read_all() == "ared"
+
+
+def test_crlf_split_across_reads_becomes_one_newline():
+    sh = offline_shell()
+    sh._feed(b"line\r")
+    sh._feed(b"\nnext")
+    assert sh.read_all() == "line\nnext"
+
+
+def test_unrecognised_escape_does_not_wedge_the_stream():
+    """A sequence the stripper does not know — DCS here, but sixel or a
+    terminal-query reply would do — must degrade to noise in the buffer
+    rather than swallowing everything after it, which would make every
+    later expect() time out with a stale dump."""
+    sh = offline_shell()
+    sh._feed(b"before\x1bP1$r")
+    sh._feed(b"after" * 30)
+    assert "before" in sh.read_all()
+    assert "after" in sh.read_all()
+
+
+def test_multibyte_character_split_across_reads():
+    sh = offline_shell()
+    encoded = "héllo".encode("utf-8")
+    sh._feed(encoded[:2])
+    sh._feed(encoded[2:])
+    assert sh.read_all() == "héllo"

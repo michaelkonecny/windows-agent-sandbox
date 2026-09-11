@@ -28,6 +28,10 @@ DEFAULT_SIZE = (120, 30)
 # sequence, which avoids a third pipe and its connection handshake.  9999
 # is unregistered, so it cannot collide with a real terminal escape.
 RESIZE_OSC = re.compile(rb"\x1b\]9999;(\d+);(\d+)\x07")
+RESIZE_INTRODUCER = b"\x1b]9999;"
+# The longest request worth waiting for: introducer, two five-digit
+# dimensions and the terminator.
+MAX_HELD_FRAGMENT = len(RESIZE_INTRODUCER) + len("99999;99999\x07")
 
 
 def resize_request(cols: int, rows: int) -> bytes:
@@ -327,11 +331,29 @@ def split_resize_requests(
         pos = match.end()
 
     rest = data[pos:]
-    # An OSC introducer with no terminator yet may be a split sequence.
     start = rest.rfind(b"\x1b]")
-    if start != -1 and b"\x07" not in rest[start:]:
+    if start != -1 and _could_still_become_a_resize(rest[start:]):
         return bytes(payload + rest[:start]), resizes, bytes(rest[start:])
     return bytes(payload + rest), resizes, b""
+
+
+def _could_still_become_a_resize(fragment: bytes) -> bool:
+    """Whether waiting for more bytes could complete a resize request.
+
+    Only a fragment that might still be one is worth holding.  Holding
+    anything that merely starts with ESC-] means a stray Alt+] swallows
+    every keystroke after it and the sandbox's keyboard goes dead, with
+    nothing logged.  Everything else is forwarded straight away —
+    delivering it in two pieces costs nothing, since the shell is reading
+    a byte stream.
+    """
+    if len(fragment) >= MAX_HELD_FRAGMENT:
+        return False
+    if len(fragment) < len(RESIZE_INTRODUCER):
+        return RESIZE_INTRODUCER.startswith(fragment)
+    return fragment.startswith(RESIZE_INTRODUCER) and all(
+        byte in b"0123456789;" for byte in fragment[len(RESIZE_INTRODUCER):]
+    )
 
 
 def _relay_output(src: int, dst: int, _log) -> None:
