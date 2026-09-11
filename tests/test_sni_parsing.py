@@ -12,7 +12,12 @@ from __future__ import annotations
 import pytest
 
 from sbx.config import NetworkPreset
-from sbx.proxy import NetworkPolicy, is_domain_allowed, parse_sni
+from sbx.proxy import (
+    NetworkPolicy,
+    is_domain_allowed,
+    parse_connect_request,
+    parse_sni,
+)
 
 
 def client_hello(
@@ -173,3 +178,43 @@ def test_trailing_dot_is_ignored():
 
 def test_empty_domain_is_denied():
     assert not is_domain_allowed("", CLAUDE_ONLY)
+
+
+# ── parse_connect_request ────────────────────────────────────
+
+
+def test_connect_with_explicit_port():
+    assert parse_connect_request(
+        b"CONNECT api.anthropic.com:443 HTTP/1.1\r\n"
+    ) == ("api.anthropic.com", 443)
+
+
+def test_connect_without_a_port_defaults_to_443():
+    assert parse_connect_request(b"CONNECT api.anthropic.com HTTP/1.1\r\n") == (
+        "api.anthropic.com", 443
+    )
+
+
+def test_connect_to_a_non_default_port():
+    assert parse_connect_request(b"CONNECT example.test:8443 HTTP/1.1\r\n") == (
+        "example.test", 8443
+    )
+
+
+def test_an_ipv6_literal_keeps_its_brackets():
+    assert parse_connect_request(b"CONNECT [::1]:443 HTTP/1.1\r\n") == (
+        "[::1]", 443
+    )
+
+
+@pytest.mark.parametrize("line", [
+    b"GET /secret HTTP/1.1\r\n",                 # a different method
+    b"connect example.test:443 HTTP/1.1\r\n",    # methods are case-sensitive
+    b"CONNECT\r\n",                              # no target
+    b"CONNECT example.test:notaport HTTP/1.1\r\n",
+    b"\r\n",
+    b"",
+    b"\xff\xfe\x00 binary",
+])
+def test_requests_that_must_be_rejected(line):
+    assert parse_connect_request(line) is None
