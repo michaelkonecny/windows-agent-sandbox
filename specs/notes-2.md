@@ -313,14 +313,26 @@ so each is revertible on its own.
 
 ## Follow-ups
 
-- Decide how Ctrl+C should reach the sandbox shell.
-- Decide what to do about git-bash sandboxes sharing mount access (see
-  AFK decisions above) — this is the one with security consequences.
+Decisions, roughly by how much they cost to get wrong:
+
+- Decide what to do about git-bash sandboxes reaching every other
+  sandbox's mounts. git-bash is the default shell and cannot take
+  restricted SIDs, so this is the widest hole. Options: default to `pwsh`
+  and keep git-bash opt-in, refuse to mount for Cygwin shells, or accept
+  it and say so in the docs.
+- Decide whether system paths should be genuinely read-only, and if so
+  where a sandbox may then write temp files. Today anything `BUILTIN\Users`
+  can write is writable, and shared between sandboxes.
+- Decide how Ctrl+C should reach the sandbox shell, given ConPTY will not
+  carry it and three mechanisms are already ruled out.
 - Decide whether the sandbox shell should inherit the host environment.
-- Decide whether system paths should be genuinely read-only, and where a
-  sandbox is then allowed to write temp files.
-- Implement the network system tests once the proxy and WFP rules are
-  verified; scenarios are listed in `specs/tests/system.md`.
-- Implement the remaining privilege scenarios (taskkill against a host
-  PID, `net user /add`, registry writes) and deep process-tree tracking.
+
+Work, no decision needed:
+
+- Wire WFP rule installation into `sbx install`. Layer 1 of the network
+  design does not exist at runtime until this lands, so a sandbox that
+  ignores `HTTPS_PROXY` currently has unrestricted egress.
+- Write the network system tests once WFP and the proxy are verified;
+  the scenarios are already in `specs/tests/system.md`.
+- Address sandboxes by their `--name` alias, not only by project path.
 - Consider a dedicated pipe for resize, removing the lone-ESC ambiguity.
