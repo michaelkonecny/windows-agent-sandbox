@@ -166,17 +166,27 @@ Uses a shared sandbox user account + per-sandbox restricted tokens with syntheti
 
 #### User accounts
 
-A single shared local user account (`sbx-user`) hosts all sandboxes. Individual sandboxes are isolated from each other via restricted tokens, not separate accounts. This avoids managing N accounts.
+Each sandbox gets its own local user account, `sbx-<id>`. The account *is* the isolation boundary: mount backing paths are ACL'd for that account, so sandbox A's token carries no identity that appears on sandbox B's paths.
 
-#### Restricted tokens and synthetic SIDs
+Why not one shared account. The original design shared a single `sbx-user` and separated sandboxes with per-sandbox synthetic SIDs in a restricted token, to avoid managing N accounts. That cannot work with Cygwin-based shells, and git-bash is the default:
 
-Each sandbox gets a per-sandbox synthetic SID — unique to that sandbox, ACL'd with read+write on the sandbox's mount targets. Isolates sandbox A from sandbox B's files.
+- A fully restricted token is access-checked twice, and the second pass only grants what `RestrictedSids` names. Cygwin builds POSIX on top of Win32 at startup — signals, a shared process table behind `fork`, cross-process synchronisation — and creating those **named kernel objects** is refused. Measured: creating a named pipe is fine under a restricted token; creating a named mutex, event or section is denied with `ERROR_ACCESS_DENIED`.
+- The grants Cygwin needs cannot be given without dissolving the isolation. Backing paths must grant the shared account, or the *first* access check fails and the mount is unreadable. Put that same account in `RestrictedSids` and both checks pass for every sandbox's mount, so the synthetic SID stops gating anything.
+- The bind is structural: the first check needs a SID the token holds as a group, the second needs it in `RestrictedSids`, and a synthetic SID can only ever be in the second. Adding the logon session SID, `Authenticated Users` or `INTERACTIVE` does not close it — all measured.
 
-The restricted token's `RestrictedSids` list contains `[per_sandbox_sid, BUILTIN\Users, Everyone]`. `Everyone` is there because without it a shell fails to start with `STATUS_DLL_INIT_FAILED`. Because the token is fully restricted (not WRITE_RESTRICTED), both reads and writes must pass the restricted SID check. The sandbox process can only access:
-- Its own mounts — via the per-sandbox SID (ACL'd on mount backing paths)
-- System paths — via `BUILTIN\Users` (system paths like `C:\Windows`, `C:\Program Files`, Python/Node/Git directories already grant the Users group read access in their DACLs)
+A real account satisfies both checks with one identity, so no synthetic SID is needed and no shell needs a carve-out. See `specs/notes-2.md` for the measurements.
 
-No shared synthetic SID or extra system path ACLs are needed — `BUILTIN\Users` in RestrictedSids is sufficient.
+Cost accepted: N accounts to create, hide from the sign-in screen, and delete along with their profiles.
+
+#### Tokens
+
+The sandbox shell runs under the sandbox's own account with `DISABLE_MAX_PRIVILEGE`, which strips every privilege except `SeChangeNotifyPrivilege`. No `RestrictedSids` list: isolation comes from the account, and restricted SIDs are what Cygwin shells cannot survive.
+
+The sandbox process can reach:
+- Its own mounts — backing paths are ACL'd for its account
+- System paths — via `BUILTIN\Users`, which system paths already grant
+
+Another sandbox's mounts are denied because its account appears on none of them.
 
 That also fixes what system access means: a sandbox inherits exactly what `Users` may do on a path, not a read-only subset. Where `Users` has write, so does the sandbox — `C:\Windows\Temp` is writable today, verified. So system access is not read-only, and any location `Users` can write is a channel between sandboxes. Making it genuinely read-only would need a shared system SID with explicit read-only ACEs, the design these PoC findings replaced; that trade-off is now an open question rather than a settled one.
 
