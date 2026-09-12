@@ -27,7 +27,7 @@ Two layers:
 
 ## Sandbox lifecycle
 
-1. Install (one-time) — engine creates the local group that sandbox accounts join, which is what WFP rules are scoped to. Requires elevation. Intended to configure those WFP rules too; it does not yet, so the network backstop described under Network mechanism is not in place (see Follow-ups). No system-path ACLs are needed — see Tokens.
+1. Install (one-time) — engine creates the local group `sbx-sandboxes`, which every sandbox account joins and which the WFP rules are scoped to. Requires elevation. Intended to configure those WFP rules too; it does not yet, so the network backstop described under Network mechanism is not in place (see Follow-ups). No system-path ACLs are needed — see Tokens.
 2. Init — `sbx init` scaffolds a `.sandbox/config.json` with defaults. User edits it.
 3. Create — engine creates the sandbox's local account, adds it to the sandbox group, hides it from the sign-in screen, logs the account on once to materialise its profile, then sets up bind links and ACLs granting that account on the mounts' backing paths, and stores sandbox metadata. Requires elevation.
 4. Start — engine re-invokes itself as the sandbox's own account (via `CreateProcessWithLogonW`), strips privileges from that account's token with `DISABLE_MAX_PRIVILEGE`, and launches an interactive shell under it inside a ConPTY. The shell appears embedded in the host terminal with full cursor, colour, and interactive program support. The user launches agents or other tools from within this shell. Does not require elevation. See Shell integration mechanism.
@@ -202,6 +202,8 @@ Why not one shared account. The original design shared a single `sbx-user` and s
 
 A real account satisfies both checks with one identity, so no synthetic SID is needed and no shell needs a carve-out. See `specs/notes-2.md` for the measurements.
 
+Every sandbox account is a member of the local group `sbx-sandboxes`, created at install. Membership exists so the WFP rules have one SID to scope to, instead of being rewritten whenever a sandbox appears or goes away.
+
 Cost accepted: N accounts to create, hide from the sign-in screen, and delete along with their profiles.
 
 Sandbox accounts are hidden from the sign-in screen by writing a `DWORD` of `0` named after the account under `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList`, removed again on destroy. Hiding changes nothing about the account's rights — it only keeps a machine with several sandboxes from growing a login screen full of them.
@@ -271,7 +273,7 @@ Avoids elevation for start/stop.
 3. The runner calls `CreateProcessAsUser` with that token to spawn the configured shell. This works without special privileges because the token is derived from the runner's own logon session.
 4. The runner stays alive to relay VT bytes between the engine CLI and the sandboxed shell, and exits when the shell exits.
 
-Each sandbox's account password is generated at create time and stored DPAPI-encrypted, keyed by sandbox, and read by the engine at start time. DPAPI is scoped to the host user, so another account on the machine cannot decrypt it even with the file.
+Each sandbox's account password is generated at create time with `secrets.token_urlsafe(32)` and stored DPAPI-encrypted at `%LOCALAPPDATA%\sbx\credentials\<name>.bin`, one file per sandbox so destroy deletes a file rather than rewriting a shared one. Read by the engine at start time. DPAPI is scoped to the host user, so another account on the machine cannot decrypt it even with the file.
 
 The ConPTY is created by the runner under its own full token; only the shell child gets the privilege-stripped one. No ConPTY operation therefore depends on a stripped privilege.
 
