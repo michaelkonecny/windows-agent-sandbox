@@ -387,6 +387,55 @@ so each is revertible on its own.
   shell. Before this change it could reach nothing, so the hole was
   masked by the feature being broken.
 
+### Why Cygwin shells cannot take restricted SIDs — measured
+
+Cygwin's init creates a named pipe to carry POSIX signals. Under a fully
+restricted token that creation is denied (`couldn't create signal pipe,
+Win32 error 5` — `ERROR_ACCESS_DENIED`), because a restricted token is
+access-checked twice and the second pass only grants what the
+`RestrictedSids` list names.
+
+Which SID is missing, tested as `sbx-user` with git-bash under ConPTY:
+
+| extra SID in `RestrictedSids` | bash starts |
+| --- | --- |
+| none — current behaviour | no |
+| logon session SID (`S-1-5-5-X-Y`) | no |
+| `Authenticated Users` | no |
+| `INTERACTIVE` | no |
+| all three together | no |
+| `sbx-user`'s own SID | **yes** |
+
+So the object is ACL'd for the account itself, not for any group it
+belongs to. That rules out the cheap fix: no group SID can stand in.
+
+And adding `sbx-user` to `RestrictedSids` is not available either, because
+it would dissolve the isolation it is meant to preserve. Backing paths
+grant `sbx-user` — they must, or the *first* check fails and the mount is
+unreadable. Put the same SID in the restricted list and both checks pass
+for every sandbox's mount, so the synthetic SID stops gating anything and
+sandbox A reads sandbox B.
+
+The bind is structural: the first check needs a SID the token holds as a
+group, the second needs it in `RestrictedSids`, and the per-sandbox
+synthetic SID can only ever be in the second. Two ways out, both
+architectural:
+
+- Give each sandbox its own account instead of sharing `sbx-user`. Backing
+  paths grant that account, `RestrictedSids` may then safely contain it,
+  and isolation comes from real accounts. The spec rejected this to avoid
+  managing N accounts; it dissolves this problem completely.
+- Build the token with `NtCreateToken` so the synthetic SID sits in the
+  token's *groups* as well. Then backing paths need not grant `sbx-user`
+  at all, and it can go in `RestrictedSids` for Cygwin's sake. Needs
+  `SeCreateTokenPrivilege`, which in practice means running as SYSTEM.
+
+Also seen while testing, and unrelated to tokens: the working shell
+printed `bash: /c/Users/User/.bashrc: Permission denied`. It is reading
+the *host* user's profile, because the sandbox inherits the host
+environment — the same issue already listed under Follow-ups, showing up
+concretely.
+
 ### Warn loudly on Cygwin shells; leave the default shell alone — done
 
 - Tested whether the carve-out is still needed now that the shell gets a
