@@ -29,10 +29,10 @@ Two layers:
 
 1. Install (one-time) — engine creates the local group that sandbox accounts join, which is what WFP rules are scoped to. Requires elevation. Intended to configure those WFP rules too; it does not yet, so the network backstop described under Network mechanism is not in place (see Follow-ups). No system-path ACLs are needed — see Tokens.
 2. Init — `sbx init` scaffolds a `.sandbox/config.json` with defaults. User edits it.
-3. Create — engine creates the sandbox's local account, adds it to the sandbox group, hides it from the sign-in screen, sets up bind links and ACLs granting that account on the mounts' backing paths, and stores sandbox metadata. Requires elevation.
+3. Create — engine creates the sandbox's local account, adds it to the sandbox group, hides it from the sign-in screen, logs the account on once to materialise its profile, then sets up bind links and ACLs granting that account on the mounts' backing paths, and stores sandbox metadata. Requires elevation.
 4. Start — engine re-invokes itself as the sandbox's own account (via `CreateProcessWithLogonW`), strips privileges from that account's token with `DISABLE_MAX_PRIVILEGE`, and launches an interactive shell under it inside a ConPTY. The shell appears embedded in the host terminal with full cursor, colour, and interactive program support. The user launches agents or other tools from within this shell. Does not require elevation. See Shell integration mechanism.
 5. Stop — engine terminates sandbox processes.
-6. Destroy — engine removes bind links, ACLs, the sandbox's account and its profile directory, and the sandbox metadata. Requires elevation.
+6. Destroy — engine removes bind links and ACLs, deletes the account's profile with `DeleteProfileW` (which takes the directory and its registry entry together), deletes the account, and removes the sandbox metadata. Requires elevation.
 7. Uninstall — engine removes the sandbox group, the WFP rules, and any sandbox accounts and profiles left behind by a failed destroy. Requires elevation.
 
 ## Configuration
@@ -57,7 +57,7 @@ Project-local JSON config file (`.sandbox/config.json` in the project root). Dev
 
 Mount semantics:
 - `source` — absolute path on the host (or `.` for project root, `~` for host user's home).
-- `target` — relative path under the sandbox workspace. `"repo"` resolves to `C:\ProgramData\sbx\<name>\repo`. The workspace sits outside the account's profile on purpose: creating a directory at `C:\Users\sbx-<name>` before the account's first logon makes Windows put the real profile at `sbx-<name>.<COMPUTERNAME>` instead, and mounts would then not be where the shell expects them.
+- `target` — relative path under the sandbox's home directory. `"repo"` resolves to `C:\Users\sbx-<name>\repo`, so the shell reaches it as `~/repo`.
 - Supports both folders and individual files.
 - Target names must be unique within a config. Duplicate targets are rejected at parse time.
 
@@ -217,8 +217,10 @@ That also fixes what system access means: a sandbox inherits exactly what `Users
 
 #### Mount setup
 
-- Mount targets appear as bind links under the sandbox's workspace, `C:\ProgramData\sbx\<name>\`.
+- Mount targets appear as bind links directly in the sandbox account's home directory, `C:\Users\sbx-<name>\`. The account is per-sandbox, so no further subdirectory is needed and the shell reaches a mount as `~/<target>`.
+- Order matters at create time: the account is logged on once before any mount directory is made. Windows creates a profile on first logon, and if a directory is already sitting at `C:\Users\sbx-<name>` it puts the real profile at `sbx-<name>.<COMPUTERNAME>` instead — verified — which would leave `~` pointing somewhere with no mounts in it. One throwaway logon costs about 0.4s.
 - Each mount's backing path gets one ACE, read+write, for the sandbox's own account. Destroy revokes it; nothing is shared, so nothing has to be reference-counted.
+- The runner starts the shell with its working directory set to the sandbox's home, so a session opens where the mounts are rather than in `C:\Windows\System32`.
 - Isolation follows from that ACE: sandbox A's account appears on none of B's backing paths.
 - Caveat — a backing path whose DACL grants `BUILTIN\Users` or `Everyone` is reachable from every sandbox, since every sandbox account is in `Users`. Keep project sources out of world-readable locations such as `C:\Users\Public`.
 - The engine manages bind links and ACLs during sandbox create/destroy.
