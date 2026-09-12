@@ -10,12 +10,12 @@ via named pipes on `StartHandle`. Each test gets a unique sandbox name
 
 ## Shell and runner
 
-### Runner launches as sbx-user
+### Runner launches as the sandbox's account
 Verifies: Shell integration mechanism → Runner process
 1. `start_sandbox(name, sid, "cmd.exe")`.
 2. Wait for initial output (prompt).
 3. Send `echo %username%\r\n`.
-4. Read output — expect `sbx-user`.
+4. Read output — expect `sbx-<name>`.
 
 ### Echo round-trip
 Verifies: named pipe relay
@@ -23,7 +23,7 @@ Verifies: named pipe relay
 2. Send `echo RELAY_TEST_OUTPUT\r\n`.
 3. Read output — expect `RELAY_TEST_OUTPUT`.
 
-### Git-bash under restricted token
+### Git-bash starts
 Verifies: Shell integration mechanism → Cygwin/MSYS2 shells
 1. Start sandbox with `shell=git-bash`.
 2. Wait for prompt (longer timeout — 8s+).
@@ -80,20 +80,20 @@ the token *does* rather than what it reports. The token's contents are
 asserted directly in `tests/test_tokens.py`, which holds the handle.
 
 ### Restricted token applied
-Verifies: Filesystem mechanism → Restricted tokens and synthetic SIDs
+Verifies: Filesystem mechanism → User accounts
 1. Start sandbox.
-2. Send `echo probe > C:\Users\sbx-user\sbx-token-probe.txt`.
+2. Send `echo probe > C:\Users\<another sandbox's account>\probe.txt`.
 3. Expect "Access is denied" — the sandbox user cannot write its own home
    directory, because that DACL grants the account but none of the token's
-   restricted SIDs, and a fully restricted token must pass both checks.
+   that account, and a sandbox holds no identity that appears there.
 
 ### System paths still reachable
-Verifies: Filesystem mechanism → Restricted tokens and synthetic SIDs
+Verifies: Filesystem mechanism → User accounts
 1. Start sandbox.
 2. Send `type C:\Windows\System32\drivers\etc\hosts`.
 3. Expect the file contents and no denial — `BUILTIN\Users` sits in the
    token's restricted SIDs, which is what keeps system paths readable.
 
-Cross-sandbox isolation, the other half of what the synthetic SID buys, is
+Cross-sandbox isolation, the other half of what the per-sandbox account buys, is
 covered at the system level where two real sandboxes exist:
 `tests/test_system.py::test_one_sandbox_cannot_read_anothers_mount`.

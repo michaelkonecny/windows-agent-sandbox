@@ -6,33 +6,33 @@ what the product does.
 Terminology:
 
 - engine — the Python library that manages the full sandbox lifecycle; no UI.
-- runner — the engine re-invoked as the sandbox user; creates the restricted token and spawns the shell. An internal subprocess, not a separate binary.
-- restricted token — a Windows token with a `RestrictedSids` list that gates every access check (see spec, Definitions).
-- synthetic SID — a fabricated SID placed in a restricted token to limit access to explicitly ACL'd resources.
+- runner — the engine re-invoked as the sandbox's own account; strips privileges from its token and spawns the shell. An internal subprocess, not a separate binary.
+- sandbox account — the local account `sbx-<name>` a sandbox runs as. One per sandbox, and the thing that isolates sandboxes from each other (see spec, User accounts).
+- sandbox group — the local group every sandbox account joins, so WFP rules can be scoped once rather than per account.
 - store — persistent JSON file tracking all sandbox metadata across projects.
 - elevation helper — a subprocess spawned with UAC (`runas` verb) to perform privileged operations.
 
 ## Principles
 
-- Fail-safe — every default denies access. Network: deny-all. Filesystem: restricted token blocks everything not explicitly granted. A missing config key means maximum restriction.
+- Fail-safe — every default denies access. Network: deny-all. Filesystem: a sandbox account is granted nothing beyond its own mounts and what `BUILTIN\Users` already allows. A missing config key means maximum restriction.
 - Least privilege — the engine runs unprivileged. Only bind links, ACLs, WFP rules, and user management elevate, and only for the duration of that operation.
 - Single responsibility per module — each module owns one Windows primitive or one domain concept. A likely change (e.g. swapping the proxy implementation, adding a new shell) touches one module.
 - No abstraction without a second consumer — the winapi layer wraps ctypes once; everything else calls it directly. No intermediate "platform" layer.
-- Process boundaries are trust boundaries — the runner runs as `sbx-user`, the shell runs under a restricted token. Code on each side of that boundary trusts nothing from the other side except the defined contract.
+- Process boundaries are trust boundaries — the runner runs as the sandbox's own account, the shell runs under a privilege-stripped token from it. Code on each side of that boundary trusts nothing from the other side except the defined contract.
 
 ## Runtimes
 
 Five process roles, four alive during a running sandbox:
 
 - Engine CLI — Python, runs as the host user (unprivileged). Entry point for all commands. During `start`, stays alive to relay I/O between the terminal and the runner; exits when the shell exits.
-- Runner — Python (the engine re-invoked with `_run`), runs as `sbx-user`. Lives while the sandboxed shell is alive. Creates the restricted token, spawns the shell inside a Job Object, relays I/O, exits when the shell exits.
+- Runner — Python (the engine re-invoked with `_run`), runs as the sandbox's own account. Lives while the sandboxed shell is alive. Creates the privilege-stripped token, spawns the shell inside a Job Object, relays I/O, exits when the shell exits.
 - Proxy — Python async process on loopback, runs as the host user. Long-lived: started on first sandbox start if not already running, self-terminates after 60s idle. Single port, multiplexes per sandbox via Job Object membership.
 - Elevation helper — Python (the engine re-invoked with an internal elevation subcommand), runs elevated via UAC. Transient: performs one privileged operation and exits. Communicates result back to the unprivileged engine via a temp file.
-- Sandboxed shell — the user's configured shell (bash, cmd, etc.), runs under the restricted token inside the runner's Job Object. All child processes inherit job membership. The engine doesn't own this process's internals — it just launches and monitors it.
+- Sandboxed shell — the user's configured shell (bash, cmd, etc.), runs under the privilege-stripped token inside the runner's Job Object. All child processes inherit job membership. The engine doesn't own this process's internals — it just launches and monitors it.
 
 During a running sandbox: Engine CLI + Runner + Proxy + Shell (and its children) = 4+ processes. Between sessions: 0-1 (proxy during idle timeout).
 
-Constraint forcing this topology: `CreateProcessAsUser` with a derived restricted token works without elevation only when called from the same logon session. That requires the runner to already be running as `sbx-user`.
+Constraint forcing this topology: `CreateProcessAsUser` with a token derived from another works without elevation only when called from the same logon session. That requires the runner to already be running as the sandbox's account.
 
 ## Modules
 
@@ -51,7 +51,7 @@ Entry points:
 
 Role: thin ctypes wrapper over every Win32 API the engine needs.
 
-- Holds: DLL bindings, struct definitions, constants, low-level helper functions (SID allocation, handle management). Covers: bind filter, user management, SIDs, ACLs, restricted tokens, process creation, Job Objects (`CreateJobObject`/`AssignProcessToJobObject`/`IsProcessInJob`/`TerminateJobObject`), WFP, ConPTY (`CreatePseudoConsole`/`ResizePseudoConsole`/`ClosePseudoConsole`), DPAPI, TCP table (`GetExtendedTcpTable`).
+- Holds: DLL bindings, struct definitions, constants, low-level helper functions (SID allocation, handle management). Covers: bind filter, user and local group management, profile deletion (`DeleteProfileW`), SIDs, ACLs, token creation, process creation, Job Objects (`CreateJobObject`/`AssignProcessToJobObject`/`IsProcessInJob`/`TerminateJobObject`), WFP, ConPTY (`CreatePseudoConsole`/`ResizePseudoConsole`/`ClosePseudoConsole`), DPAPI, TCP table (`GetExtendedTcpTable`).
 - Notes: evolved from `poc/winapi.py`. Pure functions and stateless calls — no sandbox concepts leak in. Adding a new Win32 call means adding it here, nowhere else.
 - Depends on: nothing (leaf module).
 
@@ -67,15 +67,15 @@ Role: load, validate, and resolve a project's `.sandbox/config.json`.
 
 Role: persist and query sandbox metadata across all projects.
 
-- Holds: sandbox records (name, state, synthetic SID string, config path, PIDs, creation time), CRUD operations, state transitions.
-- Notes: JSON file in `%LOCALAPPDATA%\sbx\sandboxes.json`. File-locked on write to handle concurrent CLI invocations. Each record is keyed by project path (one sandbox per project). Name is a display alias for easier lookup, defaults to the project directory name. Names must be unique across all sandboxes — `add()` rejects a duplicate name and the user must supply `--name` with a different alias. Uniqueness matters because the name determines the bind link directory (`C:\Users\sbx-user\<name>\`).
+- Holds: sandbox records (name, state, account name, config path, PIDs, creation time), CRUD operations, state transitions.
+- Notes: JSON file in `%LOCALAPPDATA%\sbx\sandboxes.json`. Locked for both reading and writing, so a read cannot catch a half-written file. Each record is keyed by project path (one sandbox per project). Names must be unique across all sandboxes, compared case-insensitively — the name becomes the account `sbx-<name>`, and Windows account names are case-insensitive. See Sandbox name in the project spec for the rules and the collision prompt.
 - Depends on: nothing (reads/writes a JSON file).
 
 ### identity
 
-Role: manage the shared sandbox user account, its credentials, and synthetic SIDs.
+Role: manage per-sandbox accounts and their credentials.
 
-- Holds: user creation/deletion (`NetUserAdd`/`NetUserDel`), credential generation, DPAPI-encrypted credential storage/retrieval, synthetic SID generation, SID serialization to/from string form.
+- Holds: account creation/deletion (`NetUserAdd`/`NetUserDel`), sandbox-group membership, hiding accounts from the sign-in screen, profile deletion, name derivation and validation, credential generation, DPAPI-encrypted credential storage/retrieval keyed by sandbox.
 - Notes: credentials stored in `%LOCALAPPDATA%\sbx\credentials.json` (DPAPI-encrypted, readable only by the host user). Synthetic SIDs are random under authority `{0,0,0,0,0,42}` with 4 sub-authorities — collision probability is negligible but checked on generation.
 - Depends on: winapi (user management, SID, DPAPI APIs).
 
@@ -83,23 +83,23 @@ Role: manage the shared sandbox user account, its credentials, and synthetic SID
 
 Role: set up and tear down filesystem isolation for a sandbox.
 
-- Holds: bind link creation/removal (`BfSetupFilter`/`BfRemoveMapping`), ACL management on backing paths (grant per-sandbox SID via `SetEntriesInAcl` + `SetNamedSecurityInfo`), ACL cleanup on destroy.
-- Notes: all operations require elevation — callers must go through the elevation module. Bind link virtual paths live under `C:\Users\sbx-user\<sandbox-name>\`. Leftover bind links from a crashed destroy are detected and cleaned up.
+- Holds: bind link creation/removal (`BfSetupFilter`/`BfRemoveMapping`), ACL management on backing paths (grant the sandbox's account via `SetEntriesInAcl` + `SetNamedSecurityInfo`), ACL cleanup on destroy.
+- Notes: all operations require elevation — callers must go through the elevation module. Bind link virtual paths live directly in the sandbox account's home, `C:\Users\sbx-<name>\`, which must already exist: create logs the account on once first, or Windows diverts the real profile to `sbx-<name>.<COMPUTERNAME>`. Leftover bind links from a crashed destroy are detected and cleaned up.
 - Depends on: winapi (bind filter, ACL APIs).
 
 ### tokens
 
-Role: create restricted tokens for sandbox processes.
+Role: strip privileges from the token a sandbox process runs under.
 
-- Holds: restricted token creation (`CreateRestrictedToken` with `DISABLE_MAX_PRIVILEGE`), RestrictedSids list assembly (`[per_sandbox_sid, BUILTIN\Users, Everyone]`), null DACLs on the token object and on its default DACL.
-- Notes: called by the runner (inside the `sbx-user` logon session), not by the engine CLI directly. The token is a primary token suitable for `CreateProcessAsUser`. `Everyone` is in the list to avoid `STATUS_DLL_INIT_FAILED`. Cygwin/MSYS2 shells instead get `DISABLE_MAX_PRIVILEGE` only and an empty RestrictedSids list — their init touches session-local kernel objects whose DACLs we do not control — so they keep privilege stripping but lose synthetic-SID filesystem isolation.
+- Holds: token creation (`CreateRestrictedToken` with `DISABLE_MAX_PRIVILEGE` and an empty RestrictedSids list).
+- Notes: called by the runner (inside the sandbox account's logon session), not by the engine CLI directly. The token is a primary token suitable for `CreateProcessAsUser`. No restricted SIDs: isolation comes from the account, and a restricted SID list is precisely what Cygwin shells cannot start under — see User accounts in the project spec. Every shell is treated the same, so there is no per-shell branch here.
 - Depends on: winapi (token APIs, SID APIs).
 
 ### network
 
 Role: manage WFP rules and the proxy lifecycle.
 
-- Holds: WFP rule installation/removal (scoped to `sbx-user`'s SID, block all egress except loopback to proxy port), proxy start/stop, PID→policy registration/deregistration with the proxy.
+- Holds: WFP rule installation/removal (scoped to the sandbox group's SID, block all egress except loopback to proxy port), proxy start/stop, Job Object→policy registration/deregistration with the proxy.
 - Note: rules go in via PowerShell `New-NetFirewallRule -LocalUser` (an SDDL string), not the ctypes WFP APIs; `netsh` offers no per-user scoping.
 - Notes: WFP rules are static — installed once during `install`, removed during `uninstall`. They never change per sandbox. Per-sandbox network policy is purely a proxy concern. The proxy is started lazily on first `start` if not already running.
 - Depends on: winapi (WFP APIs), proxy (lifecycle management).
@@ -108,9 +108,9 @@ Role: manage WFP rules and the proxy lifecycle.
 
 Role: launch and manage sandboxed shell processes via the command runner pattern, with full interactive terminal support via ConPTY.
 
-- Holds: runner launch (`CreateProcessWithLogonW` to re-invoke engine as `sbx-user`), named Job Object creation, ConPTY pseudo-console creation and management, I/O relay between the CLI terminal and the runner's PTY, PID tracking, process termination, re-invocation command line construction.
+- Holds: runner launch (`CreateProcessWithLogonW` to re-invoke engine as the sandbox's account), named Job Object creation, ConPTY pseudo-console creation and management, I/O relay between the CLI terminal and the runner's PTY, PID tracking, process termination, re-invocation command line construction.
 - Notes: the runner creates a named Job Object (`sbx-job-<sandbox-name>`) with a security descriptor granting the host user read access, then creates a ConPTY and attaches the sandboxed shell to both. The Job Object ensures all child processes (anything the user launches from the shell) inherit membership — this is how the proxy identifies which sandbox a connecting process belongs to. ConPTY gives proper terminal emulation — ANSI escapes, line editing, tab completion, window resize. Ctrl+C is the exception: an `0x03` byte on the pseudoconsole's input pipe does not become a `CTRL_C_EVENT` for the client, so a running command is not interrupted (see `notes-2.md`). Host and runner run under different accounts, so two null-DACL named pipes carry VT bytes between them; the engine CLI side relays between its own console and those pipes, and resize requests travel in band on the input pipe as a private OSC sequence. On stop, the engine terminates the Job Object (which kills the shell and all its children).
-- Trust boundary: this module's code runs in two contexts — engine CLI side (host user, unprivileged) handles runner launch and I/O relay; runner side (`sbx-user`) handles token creation, Job Object setup, and shell spawn. Same pattern as the elevation module.
+- Trust boundary: this module's code runs in two contexts — engine CLI side (host user, unprivileged) handles runner launch and I/O relay; runner side (the sandbox's account) handles token creation, Job Object setup, and shell spawn. Same pattern as the elevation module.
 - Depends on: winapi (process APIs, ConPTY APIs, Job Object APIs), tokens (called by the runner side), identity (reads credentials for `CreateProcessWithLogonW`), store (registers/deregisters PIDs).
 
 ### elevation
@@ -194,7 +194,7 @@ Internal edges:
 - engine → network : install/uninstall WFP; start/stop proxy policy
 - engine → process : start/stop shell processes
 - engine → elevation : delegate privileged operations
-- process → tokens : runner creates restricted token
+- process → tokens : runner strips privileges from its token
 - process → identity : read credentials for `CreateProcessWithLogonW`
 - process → store : register/deregister sandbox PIDs and Job Object handles
 - network → proxy : start/stop proxy, register Job Object→policy
@@ -275,17 +275,18 @@ class Store:
 ```python
 class Identity:
     def install_user() -> str
-        """Create sbx-user, generate and store DPAPI-encrypted credentials.
+        """Create this sandbox's account, generate and store DPAPI-encrypted credentials.
         Return the username. No-op if user already exists."""
 
     def uninstall_user() -> None
-        """Delete sbx-user and remove stored credentials."""
+        """Delete this sandbox's account, its profile, and its stored credentials."""
 
     def generate_sid() -> str
-        """Create a random synthetic SID. Returns S-1-... string."""
+        """Derive a valid sandbox name from a project path, or validate one
+        the user supplied. Returns the name, not the account."""
 
     def get_credentials() -> tuple[str, str]
-        """Return (username, password) for sbx-user, decrypted from DPAPI store."""
+        """Return (username, password) for a sandbox, decrypted from the DPAPI store."""
 ```
 
 ### engine → mounts
@@ -312,7 +313,7 @@ class Mounts:
 ```python
 class Network:
     def install_wfp_rules() -> None
-        """Install static WFP deny rules scoped to sbx-user. Requires elevation."""
+        """Install static WFP deny rules scoped to the sandbox group. Requires elevation."""
 
     def uninstall_wfp_rules() -> None
         """Remove WFP rules. Requires elevation."""
@@ -344,7 +345,7 @@ def create_sandbox_token(
 ) -> int:                      # token HANDLE
 ```
 
-Called inside the runner (running as `sbx-user`). Opens the runner's own process token, creates a restricted token with `RestrictedSids = [sandbox_sid, BUILTIN\Users, Everyone]` and `DISABLE_MAX_PRIVILEGE`. Takes `skip_restricted_sids=True` for Cygwin/MSYS2 shells. Returns the token handle for `CreateProcessAsUser`.
+Called inside the runner (running as the sandbox's account). Opens the runner's own process token and derives one with `DISABLE_MAX_PRIVILEGE` and an empty `RestrictedSids` list. Returns the token handle for `CreateProcessAsUser`. No per-shell variants.
 
 ### network → proxy
 
@@ -409,4 +410,4 @@ All paths are `pathlib.Path` objects internally. SIDs are strings (`S-1-...`) ex
 - TUI framework — Textual or similar. Deferred per spec.
 - Whether the sandbox shell should inherit the host process's environment. It currently does, so host state such as `PROMPT` leaks in.
 - How Ctrl+C should reach the sandbox shell, given ConPTY will not deliver it (see `notes-2.md`).
-- Whether `setup_mounts` should grant `sbx-user` on backing paths as well as the synthetic SID — without it a mount is unreadable from inside its own sandbox (see `notes-2.md`).
+- Whether `sbx install` should refuse to proceed on a machine where local account creation is blocked by policy, rather than failing later at the first `create`.

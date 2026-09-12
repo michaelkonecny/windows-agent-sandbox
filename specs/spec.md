@@ -66,7 +66,7 @@ Mount semantics:
 Every sandbox has a name. It becomes the local account (`sbx-<name>`), that account's profile folder, the Job Object and the named pipes, so it is a durable identity rather than a label.
 
 Rules:
-- Maximum 12 characters. The account is `sbx-` plus the name, and a Windows account name is capped at 20; the remaining four characters are headroom for a disambiguating suffix.
+- Maximum 12 characters, which keeps the account name at 16 and inside the 20-character limit a Windows account name has. The remaining four are slack, not reserved — a collision suffix is applied within the 12 by shortening the base.
 - Unique across sandboxes, compared case-insensitively — Windows account names are case-insensitive, so `Foo` and `foo` would be the same account.
 - Lowercase. Characters a SAM account name forbids (`/ \ : ; | = , + * ? < >`) are replaced with `-`, and runs of `-` are collapsed.
 
@@ -163,6 +163,7 @@ Fullscreen terminal application showing:
 - Multiple sandboxes mounting the same source folder → allowed. Each sandbox's account gets its own ACE on the backing path and its own bind link, so neither depends on the other.
 - A sandbox's account already exists, left behind by a failed destroy → delete it and its profile, then recreate, so the new sandbox cannot inherit stale group membership or ACLs.
 - Sandbox name collision → refuse, and propose the next free numeric suffix for the user to confirm. See Sandbox name.
+- Account creation refused — local account policy, or endpoint security objecting to programmatic account creation → create fails reporting the underlying error, and rolls back anything it already made so no half-built sandbox is left behind.
 - Starting a sandbox that is already running → refuse with a clear error naming the sandbox. Without the check it fails silently: the second runner connects to the first host's named pipes, and the second host waits for a connection that never arrives.
 - Runner fails to connect to named pipes within 15s → host closes pipes, terminates runner, reports error.
 - Shell crashes or exits → runner detects via `WaitForSingleObject`, closes ConPTY, relay threads exit on `ERROR_BROKEN_PIPE`, `sbx start` returns to host prompt.
@@ -202,6 +203,8 @@ Why not one shared account. The original design shared a single `sbx-user` and s
 A real account satisfies both checks with one identity, so no synthetic SID is needed and no shell needs a carve-out. See `specs/notes-2.md` for the measurements.
 
 Cost accepted: N accounts to create, hide from the sign-in screen, and delete along with their profiles.
+
+Sandbox accounts are hidden from the sign-in screen by writing a `DWORD` of `0` named after the account under `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList`, removed again on destroy. Hiding changes nothing about the account's rights — it only keeps a machine with several sandboxes from growing a login screen full of them.
 
 #### Tokens
 
@@ -268,7 +271,7 @@ Avoids elevation for start/stop.
 3. The runner calls `CreateProcessAsUser` with that token to spawn the configured shell. This works without special privileges because the token is derived from the runner's own logon session.
 4. The runner stays alive to relay VT bytes between the engine CLI and the sandboxed shell, and exits when the shell exits.
 
-Sandbox user credentials are stored DPAPI-encrypted during install, read by the engine at start time.
+Each sandbox's account password is generated at create time and stored DPAPI-encrypted, keyed by sandbox, and read by the engine at start time. DPAPI is scoped to the host user, so another account on the machine cannot decrypt it even with the file.
 
 The ConPTY is created by the runner under its own full token; only the shell child gets the privilege-stripped one. No ConPTY operation therefore depends on a stripped privilege.
 
@@ -384,7 +387,6 @@ Test requirements:
 - Log capture and forwarding from sandbox processes.
 - Resize escape sequence format — currently `\x1b]9999;<cols>;<rows>\x07` (private OSC). Any unregistered OSC number works; a dedicated third named pipe is cleaner but adds connection complexity.
 - Whether to keep the `StartHandle` pipe API for non-interactive callers (a future API that sends commands programmatically without a terminal). If so, the VT stream over pipes *is* the programmatic API.
-- Restoring synthetic-SID filesystem isolation for Cygwin/MSYS2 shells — currently they trade it away to start at all (see Cygwin/MSYS2 shells).
 
 ## Non-goals
 

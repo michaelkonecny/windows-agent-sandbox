@@ -29,7 +29,7 @@ Verifies: Filesystem mechanism → Mount setup
 5. Verify `sbx-created.txt` exists on host at the source path with correct content.
 
 ### Mount boundary
-Verifies: Filesystem mechanism → Restricted tokens and synthetic SIDs
+Verifies: Filesystem mechanism → User accounts
 1. Create a file at a path outside any mount (e.g. `%TEMP%\outside-mount.txt`).
 2. Start sandbox.
 3. `type %TEMP%\outside-mount.txt` — expect "Access is denied."
@@ -42,7 +42,7 @@ Verifies: Filesystem mechanism → System paths granted via shared SID
 3. `echo x > C:\Windows\Temp\sbx-write-test.txt` — expect "Access is denied."
 
 ### Cross-sandbox isolation
-Verifies: Filesystem mechanism → Restricted tokens and synthetic SIDs
+Verifies: Filesystem mechanism → User accounts
 1. Create two sandboxes (A and B) with different mounts.
 2. Start sandbox A.
 3. From sandbox A, try to read a file in sandbox B's mount path — expect "Access is denied."
@@ -53,8 +53,8 @@ Verifies: Filesystem mechanism → Restricted tokens and synthetic SIDs
 ### Home directory boundary
 Verifies: Filesystem mechanism → Mount setup
 1. Start sandbox (name `sbx-alpha`).
-2. `echo ok > C:\Users\sbx-user\sbx-alpha\repo\myfile.txt` — expect success (own workspace).
-3. `dir C:\Users\sbx-user\sbx-beta\` — expect "Access is denied" (another sandbox's workspace).
+2. `echo ok > C:\Users\sbx-alpha\repo\myfile.txt` — expect success (own home).
+3. `dir C:\Users\sbx-beta\` — expect "Access is denied" (another sandbox's home).
 
 ### Bind link bidirectional
 Verifies: Filesystem mechanism → Mount setup
@@ -104,11 +104,11 @@ Verifies: Network mechanism → Safe defaults (proxy crash or unavailability)
 ## Privilege and token isolation
 
 ### Privileges stripped
-Verifies: Filesystem mechanism → Restricted tokens and synthetic SIDs
+Verifies: Filesystem mechanism → User accounts
 1. Start sandbox.
 2. *Corrected*: `whoami` cannot run at all once `DISABLE_MAX_PRIVILEGE` has
    stripped privileges, so it cannot report them. Observe the effect instead:
-   writing to `C:\Users\sbx-user\` is denied, because that DACL grants the
+   writing outside its own mounts is denied, because nothing there grants the
    account but none of the token's restricted SIDs and both checks must pass.
 
 ### Cannot kill host processes
@@ -155,7 +155,7 @@ Verifies: Shell integration mechanism (full chain)
 2. Wait for host prompt.
 3. Type `sbx start --name {name} --shell cmd`.
 4. Wait for sandbox prompt.
-5. *Corrected*: `echo %username%` — expect `sbx-user`. `whoami` cannot run under the restricted token.
+5. *Corrected*: `echo %username%` — expect the sandbox's account, `sbx-<name>`. `whoami` cannot run once privileges are stripped.
 6. `exit`.
 7. Wait for host prompt — confirm it returns.
 
