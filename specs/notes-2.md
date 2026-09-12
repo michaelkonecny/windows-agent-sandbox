@@ -387,6 +387,54 @@ so each is revertible on its own.
   shell. Before this change it could reach nothing, so the hole was
   masked by the feature being broken.
 
+### What a restricted token can and cannot create — measured
+
+Why `cmd` and PowerShell are unaffected while git-bash is not. Measured by
+impersonating the restricted token as `sbx-user`:
+
+| operation | unrestricted | restricted |
+| --- | --- | --- |
+| create a named pipe | ok | **ok** |
+| create an anonymous pipe | ok | ok |
+| read a system file | ok | ok |
+| named mutex, session namespace | ok | **denied (5)** |
+| named mutex, `Local\` | ok | denied (5) |
+| named event | ok | denied (5) |
+| shared memory section | ok | denied (5) |
+
+So the refusal is about **named objects in the session namespace**, not
+pipes — which makes Cygwin's "couldn't create signal pipe" message
+misleading, since pipe creation is fine.
+
+`cmd` and PowerShell are native console programs: they consume services
+that already exist and create no named objects at startup. Cygwin has to
+*build* POSIX on top of Win32 — signals, a shared process table behind
+`fork`/`wait`, cross-process synchronisation — and that construction is
+what the second access check refuses.
+
+Which SID governs that namespace, one at a time:
+
+| extra restricted SID | named mutex |
+| --- | --- |
+| none | denied |
+| **logon session SID** | **ok** |
+| `Authenticated Users` | denied |
+| `INTERACTIVE` | denied |
+| `sbx-user` itself | denied |
+
+The session namespace is ACL'd for the **logon session**, not for the
+account or any group. Note this is a *different* grant from the one
+git-bash needs: only `sbx-user`'s own SID makes bash start, and that SID
+does not unlock named objects. Cygwin therefore needs at least two
+distinct grants the restricted token withholds.
+
+Worth acting on independently of git-bash: adding the logon SID to
+`RestrictedSids` would let ordinary Windows tooling create named
+synchronisation objects inside a sandbox — installers, .NET, Chromium,
+many language runtimes all do. Verified not to weaken isolation: with it
+added, a token still reads its own mount and is still denied a mount
+ACL'd for a different synthetic SID.
+
 ### Why Cygwin shells cannot take restricted SIDs — measured
 
 Cygwin's init creates a named pipe to carry POSIX signals. Under a fully
