@@ -72,14 +72,18 @@ Rules:
 
 Default, when `--name` is not given: take the project directory name, lowercase and sanitise it, and truncate to 12 characters. Plain truncation, not truncation at a word boundary — `windows-agent-sandbox` becomes `windows-agen`, which is ugly but distinctive, where stopping at a segment boundary would give the generic and misleading `windows`. `sbx create` prints the name it chose, so the default is never a surprise.
 
-On collision, create refuses and proposes the next free numeric suffix, which the user has to confirm:
+On collision, create refuses and asks for another name, with the next free numeric suffix already typed in at the cursor:
 
 ```
 sandbox name 'windows-agen' is already used by C:\other\project
-use 'windows-age2' instead? [y/N]
+choose another name: windows-age2█
 ```
 
-The base is shortened as needed to keep the suffixed name within 12 characters. Declining, or running without a terminal to confirm on, fails with the same message and a non-zero exit — a name is never allocated that the user did not choose, because it becomes an account, a profile and a set of ACLs.
+The suggestion is prefilled and editable, not a yes/no question: Enter accepts it, or the user edits it in place first. Prefilling is done by writing the suggestion into the console's input buffer as key events (`WriteConsoleInput`), so the console's own line editing handles the rest — backspace, arrow keys and Enter all behave as the user expects, and the reply is read as an ordinary line.
+
+The base is shortened as needed to keep the suffixed name within 12 characters. Whatever the user submits is validated like any other name, so editing cannot produce an invalid or still-colliding one; a rejected edit asks again.
+
+Without a console to prompt on, create fails with the same message and a non-zero exit rather than accepting its own suggestion — a name is never allocated that the user did not choose, because it becomes an account, a profile and a set of ACLs.
 
 A name beginning with `sbx-` is accepted as given, producing `sbx-sbx-foo`. Deliberate: the prefix is ours to add, and second-guessing the user's name is not worth the special case.
 
