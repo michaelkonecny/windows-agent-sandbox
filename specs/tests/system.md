@@ -104,12 +104,14 @@ Verifies: Network mechanism → Safe defaults (proxy crash or unavailability)
 ## Privilege and token isolation
 
 ### Privileges stripped
-Verifies: Filesystem mechanism → User accounts
+Verifies: Filesystem mechanism → Tokens
 1. Start sandbox.
-2. *Corrected*: `whoami` cannot run at all once `DISABLE_MAX_PRIVILEGE` has
-   stripped privileges, so it cannot report them. Observe the effect instead:
-   writing outside its own mounts is denied, because nothing there grants the
-   account but none of the token's restricted SIDs and both checks must pass.
+2. `whoami /priv` cannot run at all once `DISABLE_MAX_PRIVILEGE` has stripped
+   privileges — it needs one of them — so the shell cannot report on its own
+   token. Counting them is done against the handle in `tests/test_tokens.py`.
+3. What is observable from inside is the account boundary: writing to another
+   sandbox's home is denied, because only that sandbox's account is granted
+   there. See Cross-sandbox isolation.
 
 ### Cannot kill host processes
 Verifies: token isolation
@@ -130,6 +132,51 @@ Verifies: token isolation
 1. Start sandbox.
 2. `reg query HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion` — expect success (read).
 3. `reg add HKLM\SOFTWARE\sbx-test /v x /d y /f` — expect "Access is denied."
+
+## Account lifecycle
+
+### Account created, hidden, and given a profile
+Verifies: Sandbox lifecycle → Create
+1. `sbx create` for a fresh project.
+2. From the host, `net user` — expect `sbx-<name>` to exist.
+3. Expect a `DWORD` named `sbx-<name>` valued 0 under the Winlogon
+   `SpecialAccounts\UserList` key, so the account stays off the sign-in screen.
+4. Expect `C:\Users\sbx-<name>` to exist and *not* `C:\Users\sbx-<name>.<COMPUTERNAME>`
+   — the suffixed form means a directory was created before the first logon.
+
+### Account and profile removed on destroy
+Verifies: Sandbox lifecycle → Destroy
+1. Create then `sbx destroy`.
+2. Expect the account gone from `net user`.
+3. Expect `C:\Users\sbx-<name>` gone.
+4. Expect the `UserList` registry value gone.
+
+### A leftover account is reclaimed
+Verifies: Edge cases
+1. Create a sandbox, then remove only its store record, leaving the account
+   and profile behind as a failed destroy would.
+2. Create again for the same project.
+3. Expect success, and a working sandbox — the stale account is removed and
+   recreated rather than reused, so it cannot carry old ACLs or group
+   membership into the new sandbox.
+
+### Name defaults to the project directory
+Verifies: Sandbox name
+1. Create for a project directory named `windows-agent-sandbox`, no `--name`.
+2. Expect the printed name to be `windows-agen` — truncated to 12, not cut at
+   a segment boundary.
+
+### Name collision offers an editable suggestion
+Verifies: Sandbox name
+1. Create a sandbox named `alpha`.
+2. Create for a different project whose directory is also `alpha`.
+3. Expect the prompt to report the conflicting project path, and to arrive
+   with `alpha2` already typed at the cursor.
+4. Press Enter — expect the sandbox created as `alpha2`.
+5. Repeat, editing the suggestion to a name of your own before Enter —
+   expect that name used instead.
+6. Repeat with no console attached — expect a non-zero exit and no sandbox,
+   rather than the suggestion being taken silently.
 
 ## Job Object containment
 
@@ -210,7 +257,9 @@ Verifies: Shell integration mechanism → Cygwin/MSYS2 shells
 2. Wait for bash prompt.
 3. `echo $SHELL` — expect contains `bash`.
 4. `ls --color=auto` — expect output (colour escapes flow through).
-5. Exit.
+5. `ls /c/Users/sbx-<another sandbox>/` — expect "Permission denied",
+   the same isolation a cmd sandbox gets.
+6. Exit.
 
 ## Lifecycle
 

@@ -23,12 +23,18 @@ Verifies: named pipe relay
 2. Send `echo RELAY_TEST_OUTPUT\r\n`.
 3. Read output — expect `RELAY_TEST_OUTPUT`.
 
-### Git-bash starts
+### Git-bash starts, with the same isolation as any other shell
 Verifies: Shell integration mechanism → Cygwin/MSYS2 shells
 1. Start sandbox with `shell=git-bash`.
 2. Wait for prompt (longer timeout — 8s+).
 3. Send `echo GIT_BASH_OK\n`.
 4. Read output — expect `GIT_BASH_OK`.
+5. Send `echo $USERNAME` — expect `sbx-<name>`, the same account any other
+   shell would get.
+
+The point of this one is that it is no longer a special case. Under the
+previous design Cygwin shells could not start at all with restricted SIDs,
+and the carve-out that let them start cost them their isolation.
 
 ## Job Object
 
@@ -71,29 +77,36 @@ Verifies: Network mechanism → Per preset (none)
 2. Send `echo [%HTTPS_PROXY%]\r\n`.
 3. Read output — expect the literal `[%HTTPS_PROXY%]` (unexpanded — variable not set).
 
-## Token
+## Account and token
 
 `whoami` is the obvious way to inspect a token and is not available here:
 `DISABLE_MAX_PRIVILEGE` strips the privileges it needs, so it fails with
-"Access is denied" inside the sandbox. These scenarios therefore check what
-the token *does* rather than what it reports. The token's contents are
-asserted directly in `tests/test_tokens.py`, which holds the handle.
+"Access is denied" inside the sandbox. These scenarios check what the token
+*does* rather than what it reports. That privileges really are stripped is
+asserted directly against the handle in `tests/test_tokens.py`, which can
+count them.
 
-### Restricted token applied
+### Shell runs as the sandbox's own account
 Verifies: Filesystem mechanism → User accounts
 1. Start sandbox.
-2. Send `echo probe > C:\Users\<another sandbox's account>\probe.txt`.
-3. Expect "Access is denied" — the sandbox user cannot write its own home
-   directory, because that DACL grants the account but none of the token's
-   that account, and a sandbox holds no identity that appears there.
+2. Send `echo %username%`.
+3. Expect `sbx-<name>` — each sandbox has its own account, so this is also
+   what distinguishes one sandbox's processes from another's.
+
+### Own home is writable
+Verifies: Filesystem mechanism → Mount setup
+1. Start sandbox.
+2. Send `echo probe > %USERPROFILE%\probe.txt`.
+3. Expect success. The mounts live here, so a sandbox that could not write
+   its own home would be useless.
 
 ### System paths still reachable
-Verifies: Filesystem mechanism → User accounts
+Verifies: Filesystem mechanism → Tokens
 1. Start sandbox.
 2. Send `type C:\Windows\System32\drivers\etc\hosts`.
-3. Expect the file contents and no denial — `BUILTIN\Users` sits in the
-   token's restricted SIDs, which is what keeps system paths readable.
+3. Expect the file contents and no denial — every sandbox account is in
+   `BUILTIN\Users`, which system paths already grant.
 
-Cross-sandbox isolation, the other half of what the per-sandbox account buys, is
-covered at the system level where two real sandboxes exist:
+Cross-sandbox isolation, the other half of what the per-sandbox account buys,
+needs two live sandboxes and is covered at the system level:
 `tests/test_system.py::test_one_sandbox_cannot_read_anothers_mount`.
