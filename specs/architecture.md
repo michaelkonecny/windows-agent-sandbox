@@ -189,7 +189,7 @@ Internal edges:
 - cli → engine : lifecycle commands
 - engine → config : parse config for create/start; scaffold config for init
 - engine → store : read/write sandbox metadata
-- engine → identity : install/uninstall user; create SIDs
+- engine → identity : derive and validate names; create/delete accounts; read credentials
 - engine → mounts : create/destroy bind links + ACLs
 - engine → network : install/uninstall WFP; start/stop proxy policy
 - engine → process : start/stop shell processes
@@ -255,7 +255,7 @@ class SandboxRecord:
     project_path: Path         # primary key — one sandbox per project
     name: str                  # display alias, default = project dir name
     state: SandboxState        # enum: created, running, stopped
-    synthetic_sid: str         # S-1-... string form
+    account: str               # the local account, sbx-<name>
     config_path: Path          # usually <project>/.sandbox/config.json
     pids: list[int]            # runner + shell PIDs when running
     job_handle: int | None     # Job Object handle when running
@@ -274,19 +274,28 @@ class Store:
 
 ```python
 class Identity:
-    def install_user() -> str
-        """Create this sandbox's account, generate and store DPAPI-encrypted credentials.
-        Return the username. No-op if user already exists."""
+    def sandbox_name(project_path: Path, requested: str | None = None) -> str
+        """Derive a name from the project directory, or validate one the user
+        supplied. Raises on an invalid name. Collisions are the engine's to
+        resolve — see Sandbox name in the project spec."""
 
-    def uninstall_user() -> None
-        """Delete this sandbox's account, its profile, and its stored credentials."""
+    def create_account(name: str) -> str
+        """Create sbx-<name>, join it to the sandbox group, hide it from the
+        sign-in screen, log it on once so Windows creates its profile, and
+        store DPAPI-encrypted credentials. Returns the account name.
+        Requires elevation."""
 
-    def generate_sid() -> str
-        """Derive a valid sandbox name from a project path, or validate one
-        the user supplied. Returns the name, not the account."""
+    def delete_account(name: str) -> None
+        """Delete the account, its profile and its stored credentials.
+        DeleteProfileW removes the profile directory and its registry entry
+        together. Requires elevation."""
 
-    def get_credentials() -> tuple[str, str]
-        """Return (username, password) for a sandbox, decrypted from the DPAPI store."""
+    def get_credentials(name: str) -> tuple[str, str]
+        """Return (account, password) for one sandbox, from the DPAPI store."""
+
+    def create_sandbox_group() -> None
+        """Create the local group every sandbox account joins, which the WFP
+        rules are scoped to. Install-time, idempotent. Requires elevation."""
 ```
 
 ### engine → mounts
@@ -294,8 +303,8 @@ class Identity:
 ```python
 class MountSpec:
     source: Path               # absolute backing path
-    target: str                # relative path under sandbox workspace
-    sandbox_sid: str           # S-1-... SID to grant access
+    target: str                # relative path under the sandbox's home
+    account: str               # the account to grant on the backing path
 
 class Mounts:
     def create(sandbox_name: str, specs: list[MountSpec]) -> None
@@ -321,11 +330,13 @@ class Network:
     def ensure_proxy_running() -> None
         """Start the proxy if not already alive."""
 
-    def register_sandbox(job_handle: int, policy: NetworkPolicy) -> None
-        """Register a sandbox's Job Object and its network policy with the proxy."""
+    def register_sandbox(job_name: str, policy: NetworkPolicy) -> None
+        """Register a sandbox's Job Object name and its network policy with the
+        proxy. The proxy resolves a connection's PID to a sandbox by asking
+        which job it belongs to, so both sides key on this exact string."""
 
-    def deregister_sandbox(job_handle: int) -> None
-        """Deregister a sandbox from the proxy."""
+    def deregister_sandbox(job_name: str) -> None
+        """Deregister a sandbox from the proxy, under the name it registered."""
 ```
 
 ### engine → elevation
@@ -335,14 +346,12 @@ class ElevationHelper:
     def run_elevated(operation: str, args: dict) -> ElevationResult
 ```
 
-Operations are string-tagged commands (e.g. `"create_bind_links"`, `"set_acls"`, `"install_wfp_rules"`). Args are JSON-serializable. The elevated subprocess deserializes, executes, and writes the result to a temp file. The helper reads the result and raises on error.
+Operations are string-tagged commands (e.g. `"create_account"`, `"delete_account"`, `"create_bind_links"`, `"install_wfp_rules"`). Args are JSON-serializable. The elevated subprocess deserializes, executes, and writes the result to a temp file. The helper reads the result and raises on error.
 
 ### process → tokens (runner-side)
 
 ```python
-def create_sandbox_token(
-    sandbox_sid: str,          # S-1-... string to convert back to SID
-) -> int:                      # token HANDLE
+def create_sandbox_token() -> int:     # token HANDLE
 ```
 
 Called inside the runner (running as the sandbox's account). Opens the runner's own process token and derives one with `DISABLE_MAX_PRIVILEGE` and an empty `RestrictedSids` list. Returns the token handle for `CreateProcessAsUser`. No per-shell variants.
@@ -353,8 +362,8 @@ Called inside the runner (running as the sandbox's account). Opens the runner's 
 class ProxyControl:
     def start() -> None
     def stop() -> None
-    def register(job_handle: int, policy: NetworkPolicy) -> None
-    def deregister(job_handle: int) -> None
+    def register(job_name: str, policy: NetworkPolicy) -> None
+    def deregister(job_name: str) -> None
 
 class NetworkPolicy:
     preset: NetworkPreset
