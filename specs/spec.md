@@ -117,6 +117,8 @@ sbx status [name]           # detailed status of one sandbox
 sbx uninstall               # removes all sandbox infrastructure (elevated)
 ```
 
+`sbx start` with non-console stdin (pipe or file) relays it to the shell and exits with the shell's exit code — makes the sandbox scriptable and system-testable.
+
 `[name]` — optional sandbox name (alias). Defaults to current project directory name. Can also be a project path for disambiguation.
 
 The tool runs unprivileged. Operations that need admin (user account creation, bind links, WFP rules, ACLs) request elevation for just that action via UAC prompt. The user never has to launch the whole tool as admin.
