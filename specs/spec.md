@@ -214,6 +214,8 @@ The proxy runs on a single port. All sandboxes share the same `HTTPS_PROXY` addr
 
 Multiple sandboxes with different network presets run concurrently — the proxy routes per-PID, WFP provides a uniform backstop.
 
+Control channel — Windows Firewall doesn't filter loopback, so sandboxes can reach the proxy's control port. Every control command must carry a random secret the proxy generates at startup and writes to its PID file in the host user's `%LOCALAPPDATA%\sbx`, which sandboxes can't read.
+
 ### Process launch mechanism
 
 Command runner pattern — avoids elevation for start/stop.

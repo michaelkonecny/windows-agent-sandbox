@@ -225,7 +225,7 @@ def test_register_via_control():
         server = await _start_test_server()
         assert len(server.policies) == 0
 
-        ctl = ProxyControl(server.control_port)
+        ctl = ProxyControl(server.control_port, server.secret)
 
         loop = asyncio.get_event_loop()
         resp = await loop.run_in_executor(
@@ -247,7 +247,7 @@ def test_deregister_via_control():
         server = await _start_test_server()
         server.policies["test-job"] = NetworkPolicy(NetworkPreset.all)
 
-        ctl = ProxyControl(server.control_port)
+        ctl = ProxyControl(server.control_port, server.secret)
 
         loop = asyncio.get_event_loop()
         resp = await loop.run_in_executor(
@@ -280,3 +280,22 @@ def test_connect_parsing():
     assert parse_connect_request(b"CONNECT host:8080 HTTP/1.1\r\n") == ("host", 8080)
     assert parse_connect_request(b"GET / HTTP/1.1\r\n") is None
     assert parse_connect_request(b"garbage") is None
+
+
+def test_control_requires_secret():
+    """Test 97: a control command without the proxy's secret is rejected
+    and leaves the policy table unchanged."""
+    async def _test():
+        server = await _start_test_server()
+        loop = asyncio.get_event_loop()
+        for secret in ("", "wrong"):
+            ctl = ProxyControl(server.control_port, secret)
+            resp = await loop.run_in_executor(
+                None, ctl._send,
+                {"cmd": "register", "job_name": "evil", "preset": "all"},
+            )
+            assert not resp["ok"]
+        assert "evil" not in server.policies
+        await server.stop()
+
+    asyncio.run(_test())

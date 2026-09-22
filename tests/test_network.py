@@ -91,9 +91,9 @@ def test_ensure_proxy_starts():
 
     try:
         from sbx.proxy import PID_FILE, _write_pid_file
-        _write_pid_file(os.getpid(), server.proxy_port, server.control_port)
+        _write_pid_file(os.getpid(), server.proxy_port, server.control_port, server.secret)
 
-        ctl = ProxyControl(server.control_port)
+        ctl = ProxyControl(server.control_port, server.secret)
         resp = ctl.ping()
         assert resp["ok"]
     finally:

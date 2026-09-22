@@ -93,7 +93,7 @@ def ensure_proxy_running() -> ProxyControl:
         control_port = info.get("control_port", 0)
         if pid and control_port and _is_process_alive(pid):
             try:
-                ctl = ProxyControl(control_port)
+                ctl = ProxyControl(control_port, info.get("secret", ""))
                 resp = ctl.ping()
                 if resp.get("ok"):
                     log.info("proxy already running, pid=%d", pid)
@@ -122,7 +122,7 @@ def _start_proxy() -> ProxyControl:
         time.sleep(0.1)
         info = read_pid_file()
         if info and info.get("control_port"):
-            ctl = ProxyControl(info["control_port"])
+            ctl = ProxyControl(info["control_port"], info.get("secret", ""))
             try:
                 resp = ctl.ping()
                 if resp.get("ok"):
@@ -147,7 +147,7 @@ def deregister_sandbox(job_name: str) -> None:
     if info is None:
         return
     try:
-        ctl = ProxyControl(info["control_port"])
+        ctl = ProxyControl(info["control_port"], info.get("secret", ""))
         ctl.deregister(job_name)
         log.info("deregistered sandbox %s", job_name)
     except (ConnectionError, OSError):

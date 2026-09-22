@@ -1,4 +1,4 @@
-"""Network isolation system tests (88-95), per shell."""
+"""Network isolation system tests (88-96), per shell unless noted."""
 from __future__ import annotations
 
 import json
@@ -128,3 +128,34 @@ def test_95_host_egress_unaffected(pair, shell):
     finally:
         b.close()
     # The after-uninstall half runs in test_80_uninstall.
+
+
+def test_96_control_port_rejects_sandbox(pair):
+    """A sandbox that reaches the proxy's control port (loopback isn't
+    firewalled) can neither widen its own policy nor stop the proxy."""
+    from probes import CURL, Shell
+    from syshelp import WORKSPACE, job_name
+
+    cmd = Shell("cmd")
+    b = pair.b
+    configure(b.path, shell=cmd.name)
+    s = _live(b, cmd)
+    try:
+        info = _proxy_info()
+        attacks = {
+            "widen": {"cmd": "register", "job_name": job_name(b.name), "preset": "all"},
+            "stop": {"cmd": "stop"},
+        }
+        lines = []
+        for name, msg in attacks.items():
+            (b.path / f"{name}.json").write_text(json.dumps(msg) + "\n", encoding="utf-8")
+            lines.append(
+                f'{CURL} -s --max-time 3 telnet://127.0.0.1:{info["control_port"]}'
+                f' < "{WORKSPACE / b.name / "repo" / f"{name}.json"}"'
+            )
+        s.send([*lines, cmd.http("other", OTHER), cmd.http("api", API)])
+        assert s.wait_probe("other") == "DENIED", "sandbox widened its own policy"
+        assert s.wait_probe("api") == "OK"
+        assert hostwin.process_alive(info["pid"]), "sandbox stopped the proxy"
+    finally:
+        s.close()

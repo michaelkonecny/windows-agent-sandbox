@@ -15,6 +15,7 @@ Harness:
 - Probe — a shell command run inside a sandbox that prints one line `PROBE <id> OK` or `PROBE <id> DENIED`. Tests assert on probe lines only, never on free-form shell output.
 - Session — one `sbx start` subprocess with a probe script piped to stdin, ending with `exit` (needs test 73).
 - Probe tools: shell built-ins plus `curl.exe` (ships in `System32`) — nothing that needs the host's Python inside the sandbox.
+- Network probes reach `host:443` without TLS — CONNECT through the proxy (or connect directly), then plain HTTP; the server's HTTP 400 proves the connection. System32 curl's TLS (Schannel) fails under restricted tokens (see notes.md).
 - Shells: isolation tests parametrized over `git-bash`, `cmd`, `powershell`, `pwsh`; skip a shell not installed, with its name in the message.
 - Fixture projects: `sbxsys-a`, `sbxsys-b` under a temp dir, each with `secret.txt` holding a unique token. Host secret: `~\sbxsys-host-secret.txt`, not mounted anywhere.
 
@@ -63,6 +64,7 @@ Rules:
 93. [system] `sbxsys-a` (`none`) and `sbxsys-b` (`claude-api-only`) running at once → A blocked from `api.anthropic.com`, B allowed.
 94. [system] Kill the proxy while B (`claude-api-only`) runs → B's requests fail; no fallback to direct egress.
 95. [system] Host process reaches `https://example.com` while sandboxes run and after uninstall — firewall rules hit only `sbx-user`.
+96. [system] A sandbox that reaches the proxy's control port (loopback isn't firewalled) can't widen its own policy or stop the proxy — control commands need the secret from the host-only PID file.
 
 ## config
 
@@ -142,6 +144,7 @@ Rules:
 49. Proxy self-terminates after 60s with no registered sandboxes.
 50. Engine registers a sandbox with the proxy over the control socket — proxy starts applying that sandbox's policy.
 51. Engine deregisters a sandbox — proxy stops tracking it.
+97. Control command without the proxy's secret — rejected, policy table unchanged.
 
 ## network
 

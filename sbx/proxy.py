@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import struct
 import sys
 from dataclasses import dataclass, field
@@ -113,6 +114,10 @@ class ProxyServer:
         self._idle_task: asyncio.Task | None = None
         self.proxy_port: int = 0
         self.control_port: int = 0
+        # Shared with the engine via the PID file, which lives in the host
+        # user's profile — sandboxes can reach the control port (loopback
+        # isn't firewalled) but can't read the secret.
+        self.secret = secrets.token_hex(16)
 
     def _lookup_policy_for_pid(self, pid: int) -> NetworkPolicy | None:
         if not self.policies:
@@ -223,7 +228,9 @@ class ProxyServer:
             data = await asyncio.wait_for(reader.readline(), timeout=5)
             msg = json.loads(data)
             cmd = msg.get("cmd")
-            if cmd == "register":
+            if not secrets.compare_digest(str(msg.get("secret", "")), self.secret):
+                resp = {"ok": False, "error": "unauthorized"}
+            elif cmd == "register":
                 job_name = msg["job_name"]
                 preset = NetworkPreset(msg["preset"])
                 allowed = msg.get("allowed_domains")
@@ -280,7 +287,7 @@ class ProxyServer:
             "proxy listening: proxy=%d control=%d",
             self.proxy_port, self.control_port,
         )
-        _write_pid_file(os.getpid(), self.proxy_port, self.control_port)
+        _write_pid_file(os.getpid(), self.proxy_port, self.control_port, self.secret)
         self._reset_idle()
         await self._shutdown_event.wait()
         self._proxy_server.close()
@@ -306,10 +313,13 @@ async def _relay_stream(
         pass
 
 
-def _write_pid_file(pid: int, proxy_port: int, control_port: int) -> None:
+def _write_pid_file(
+    pid: int, proxy_port: int, control_port: int, secret: str = "",
+) -> None:
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(json.dumps({
         "pid": pid, "proxy_port": proxy_port, "control_port": control_port,
+        "secret": secret,
     }))
 
 
@@ -330,13 +340,14 @@ def read_pid_file() -> dict | None:
 class ProxyControl:
     """Client stub for communicating with a running proxy."""
 
-    def __init__(self, control_port: int) -> None:
+    def __init__(self, control_port: int, secret: str = "") -> None:
         self.control_port = control_port
+        self.secret = secret
 
     def _send(self, msg: dict) -> dict:
         import socket
         with socket.create_connection(("127.0.0.1", self.control_port), timeout=5) as s:
-            s.sendall(json.dumps(msg).encode() + b"\n")
+            s.sendall(json.dumps({**msg, "secret": self.secret}).encode() + b"\n")
             data = s.recv(4096)
             return json.loads(data)
 
