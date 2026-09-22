@@ -67,6 +67,8 @@ Windows APIs (not pure logic).
 42. [integration] Shell spawned without `HTTPS_PROXY` env var when network preset is `none`.
 69. [integration] Git-bash (Cygwin/MSYS2, the default shell) starts under a restricted token — send a command via pipe, receive output back. Skips if git-bash is not installed.
 70. [integration] `start_sandbox` works with the default credentials path — verifies the flow a real user hits via `sbx install` → `sbx start` (all other tests pass an explicit temp path, sidestepping this).
+71. [integration] Git-bash via `ShellKind.git_bash` through `start_sandbox` with default shell resolution — the process is assigned to the Job Object before it starts executing (created suspended, assigned, then resumed). Skips if git-bash is not installed.
+72. [integration] End-to-end CLI: subprocess calls to `sbx install` → `sbx init` → `sbx create` → `sbx start` (send command, read output) → `sbx stop` → `sbx destroy`. Exercises the same flow a user hits manually.
 
 ## proxy
 

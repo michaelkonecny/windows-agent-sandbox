@@ -253,6 +253,42 @@ def test_git_bash_under_restricted_token(
 
 
 @pytest.mark.integration
+def test_git_bash_via_shell_kind(
+    sandbox_name, sandbox_sid, credentials_path
+):
+    """Test 71: git-bash via ShellKind.git_bash through start_sandbox.
+    The process is created suspended, assigned to the Job Object, then
+    resumed — eliminating the race with Cygwin's own job creation."""
+    from sbx.config import ShellKind
+    from sbx.process import resolve_shell
+
+    try:
+        shell_path = resolve_shell(ShellKind.git_bash)
+    except Exception:
+        pytest.skip("git-bash not installed")
+
+    handle = _start(sandbox_name, sandbox_sid, credentials_path, shell=shell_path)
+    try:
+        _read_output(handle, timeout=8)
+        _send_command(handle, "echo SHELL_KIND_OK")
+        output = _read_output(handle, timeout=8)
+        assert b"SHELL_KIND_OK" in output
+
+        job = winapi.open_job_object(
+            _job_name(sandbox_name), winapi.JOB_OBJECT_QUERY,
+        )
+        try:
+            pids = _get_job_pids(job)
+            assert len(pids) > 0
+        finally:
+            winapi.close_handle(job)
+    finally:
+        stop_sandbox(sandbox_name)
+        winapi.wait_for_process(handle.runner_process)
+        handle.close()
+
+
+@pytest.mark.integration
 def test_default_credentials_path(sandbox_name, sandbox_sid):
     """Test 70: start_sandbox works with the default credentials path.
     All other tests pass an explicit credentials_path, sidestepping the
