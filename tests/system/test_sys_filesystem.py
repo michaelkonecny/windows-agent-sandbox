@@ -8,7 +8,10 @@ import pytest
 
 from syshelp import WORKSPACE, configure, run_session, sbx, sbx_list, write_config
 
-SYSTEM_DIRS = [r"C:\Windows", r"C:\Program Files", r"C:\ProgramData", r"C:\Users\Public"]
+SYSTEM_DIRS = [
+    r"C:\Windows", r"C:\Windows\Temp", r"C:\Program Files",
+    r"C:\ProgramData", r"C:\Users\Public",
+]
 
 
 def _in_sandbox(name: str, *parts: str) -> str:

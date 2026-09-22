@@ -27,4 +27,4 @@ Preconditions, checked at session start: `EnableLUA=1`, `ConsentPromptBehaviorAd
 - `hostwin.py` — host-side Win32 queries (process owner, elevation, Job Object PIDs, firewall rules, ACLs).
 - `syshelp.py` — `sbx` CLI driver, one-shot and live sessions (60 s limit each).
 - `conftest.py` — opt-in gate, de-elevation, preconditions, fixture projects, session-end uninstall.
-- `test_sys_*.py` — tests 74-95. They run in number order, with 80 (uninstall) last.
+- `test_sys_*.py` — tests 74-99. They run in number order, with 80 (uninstall) last.

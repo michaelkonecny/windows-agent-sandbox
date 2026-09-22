@@ -59,8 +59,8 @@ Deviations from `plan.md` and follow-ups noticed during implementation.
   isolation is unaffected.
 - Shared account profile — HOME/TEMP of `sbx-user` is shared by all
   sandboxes.
-- Other world-writable system dirs (`C:\Windows\Temp`, subfolders of
-  `C:\Users\Public`) stay writable; only the two roots are locked.
+- Other world-writable system dirs (e.g. subfolders of `C:\Users\Public`,
+  `C:\Windows\Tasks`) stay writable; only the three locked roots are denied.
 - Mount sources with an OWNER RIGHTS ACE (e.g. dirs from Python 3.13+
   `tempfile.mkdtemp`) — files the sandbox creates there are owned by
   `sbx-user` and unreadable to the host.

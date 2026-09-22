@@ -21,7 +21,9 @@ SANDBOX_GROUP = "sbx-users"
 
 def system_writable_dirs() -> list[Path]:
     """System directories Users (or INTERACTIVE) may create files in."""
+    windir = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     return [
+        windir / "Temp",
         Path(os.environ.get("ProgramData", r"C:\ProgramData")),
         Path(os.environ.get("PUBLIC", r"C:\Users\Public")),
     ]

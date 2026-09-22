@@ -184,7 +184,7 @@ Because the token is fully restricted (not WRITE_RESTRICTED), both reads and wri
 
 #### System paths read-only
 
-`BUILTIN\Users` may create files in `C:\ProgramData`, and INTERACTIVE may in `C:\Users\Public`. Install adds a non-inherited deny ACE (create file, create folder) for `sbx-users` on both; uninstall removes it.
+`BUILTIN\Users` may create files in `C:\Windows\Temp` and `C:\ProgramData`, and INTERACTIVE may in `C:\Users\Public`. Install adds a non-inherited deny ACE (create file, create folder) for `sbx-users` on all three; uninstall removes it. Sandboxed tools use `sbx-user`'s own TEMP instead.
 
 ### Network mechanism
 
