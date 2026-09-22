@@ -99,6 +99,21 @@ def _op_install_user(**kwargs) -> dict:
     return {"installed": True}
 
 
+@register("install")
+def _op_install(**kwargs) -> dict:
+    """Everything `sbx install` needs admin for: the sandbox account and
+    the firewall rules scoped to it."""
+    from sbx.identity import SANDBOX_USER, grant_runner_access, install_user
+    from sbx.network import install_wfp_rules
+    from sbx.proxy import PROXY_PORT
+
+    install_user()
+    sid = winapi.account_sid(SANDBOX_USER)
+    grant_runner_access(sid)
+    install_wfp_rules(sid, PROXY_PORT)
+    return {"installed": True}
+
+
 @register("grant_access")
 def _op_grant_access(**kwargs) -> dict:
     import subprocess
@@ -135,9 +150,11 @@ def _op_destroy_mounts(**kwargs) -> dict:
 
 @register("uninstall_cleanup")
 def _op_uninstall_cleanup(**kwargs) -> dict:
-    from sbx.identity import uninstall_user
+    from sbx.identity import SANDBOX_USER, revoke_runner_access, uninstall_user
     from sbx.network import uninstall_wfp_rules
     uninstall_wfp_rules()
+    if winapi.user_exists(SANDBOX_USER):
+        revoke_runner_access(winapi.account_sid(SANDBOX_USER))
     uninstall_user()
     return {"uninstalled": True}
 

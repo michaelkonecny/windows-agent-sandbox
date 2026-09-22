@@ -158,7 +158,8 @@ def start_sandbox(
         if code == 5:
             raise ProcessError(
                 f"failed to launch runner as {username}: access denied — "
-                f"credentials may be stale, try: python -m sbx install"
+                f"stale credentials, or {username} can't read {sys.executable}; "
+                f"try: python -m sbx install"
             )
         raise ProcessError(f"failed to launch runner: {e}")
 
@@ -198,6 +199,18 @@ def start_sandbox(
         pipe_out=pipe_out,
         job_name=_job_name(sandbox_name),
     )
+
+
+def sandbox_pids(sandbox_name: str) -> list[int]:
+    """PIDs currently in the sandbox's Job Object (empty if it has none)."""
+    try:
+        job = winapi.open_job_object(_job_name(sandbox_name), winapi.JOB_OBJECT_QUERY)
+    except OSError:
+        return []
+    try:
+        return winapi.job_pids(job)
+    finally:
+        winapi.close_handle(job)
 
 
 def stop_sandbox(sandbox_name: str) -> None:
@@ -306,13 +319,19 @@ def _execute_runner_inner(
     _log(f"token created: {token}")
 
     _log(f"launching shell: {shell_path}")
+    from sbx.tokens import process_sddl
+    shell_sd = winapi.SecurityDescriptor(
+        process_sddl(winapi.token_user_sid(token), sandbox_sid),
+    )
     try:
         proc_h, thread_h, shell_pid, _ = winapi.create_process_as_user(
             token, shell_path,
             creation_flags=winapi.CREATE_SUSPENDED,
             std_handles=(stdin_read, stdout_write, stdout_write),
+            process_sa=shell_sd.attributes(),
         )
     except OSError as e:
+        shell_sd.close()
         _log(f"shell launch failed: {e}")
         winapi.close_handle(job)
         winapi.close_handle(token)
@@ -324,6 +343,7 @@ def _execute_runner_inner(
         winapi.close_handle(pipe_out)
         raise ProcessError(f"failed to launch shell: {e}")
 
+    shell_sd.close()
     _log(f"shell launched suspended, pid={shell_pid}")
     winapi.close_handle(stdin_read)
     winapi.close_handle(stdout_write)

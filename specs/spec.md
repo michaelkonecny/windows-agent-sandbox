@@ -27,7 +27,7 @@ Two layers:
 
 ## Sandbox lifecycle
 
-1. Install (one-time) — engine creates the shared sandbox user account, sets up system ACLs, configures WFP rules. Requires elevation.
+1. Install (one-time) — engine creates the shared sandbox user account, grants it read+execute on the Python installation and the sbx package (the runner executes them as that account), configures WFP rules. Requires elevation. Uninstall revokes the grants.
 2. Init — `sbx init` scaffolds a `.sandbox/config.json` with defaults. User edits it.
 3. Create — engine generates a per-sandbox synthetic SID, sets up bind links and ACLs on mount targets, stores sandbox metadata. Requires elevation.
 4. Start — engine re-invokes itself as the sandbox user (via `CreateProcessWithLogonW`), creates a restricted token from that user's token, and launches an interactive shell under it. The user launches agents or other tools from within this shell. Does not require elevation.
@@ -113,7 +113,7 @@ sbx start [name]            # opens interactive shell inside sandbox
 sbx stop [name]             # terminates sandbox processes
 sbx destroy [name]          # tears down sandbox (elevated)
 sbx list                    # shows all sandboxes and their state
-sbx status [name]           # detailed status of one sandbox
+sbx status [name]           # detailed status of one sandbox; when running, PIDs = runner + live Job Object members
 sbx uninstall               # removes all sandbox infrastructure (elevated)
 ```
 
@@ -185,7 +185,7 @@ Single user, WFP backstop, proxy-based policy. Fail-safe by design — three lay
 
 #### Layers
 
-1. WFP — static rules scoped to `sbx-user`'s SID block all egress except loopback to the proxy port. Always on, never changes per sandbox. This is the backstop — if the proxy is down or the agent ignores `HTTPS_PROXY`, traffic is blocked.
+1. WFP — static rules scoped to `sbx-user`'s SID block all egress except loopback to the proxy port. The proxy listens on a fixed loopback port (47480) so the rule, installed once at install time, can name it. Always on, never changes per sandbox. This is the backstop — if the proxy is down or the agent ignores `HTTPS_PROXY`, traffic is blocked.
 2. Proxy — a local proxy on loopback that enforces per-sandbox domain filtering via TLS SNI inspection. Defaults to deny-all when no policy is configured.
 3. Environment — `HTTPS_PROXY` env var set in the sandbox process, pointing to the proxy.
 
@@ -217,6 +217,8 @@ Command runner pattern — avoids elevation for start/stop.
 4. The runner stays alive to relay I/O between the engine CLI and the sandboxed shell, and exits when the shell exits.
 
 Sandbox user credentials are stored DPAPI-encrypted during install, read by the engine at start time.
+
+Kernel-object security — the shell process and its restricted token get explicit DACLs, never NULL ones: full access for SYSTEM, `sbx-user` and the sandbox's own synthetic SID; query/synchronize (process) or query (token) for Everyone, so the host can verify owner and elevation. For native shells the token's default DACL carries the same full-access ACEs, so the shell's children and objects are reachable by the same sandbox and no other — another sandbox passes the `sbx-user` check but fails the restricted-SID check.
 
 ### Assumptions validated
 

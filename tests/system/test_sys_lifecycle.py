@@ -74,14 +74,21 @@ def test_77_start_unprivileged(installed):
 
         pids = sbx_status(a.path).get("pids")
         assert pids, "sbx status lists no PIDs for a running sandbox"
+        runner = pids[0]
+        assert hostwin.process_owner(runner).lower() == "sbx-user"
         in_job = hostwin.job_pids(job_name(a.name))
-        assert in_job, "sandbox Job Object has no processes"
         assert set(in_job) <= set(pids), f"status PIDs {pids} miss job PIDs {in_job}"
-        for pid in in_job:
-            assert hostwin.process_owner(pid).lower() == "sbx-user", pid
-            assert not hostwin.process_elevated(pid), pid
-    finally:
-        assert s.close() == 0
+        parents = hostwin.parent_pids()
+        shells = [p for p in pids if parents.get(p) == runner]
+        assert len(shells) == 1, f"expected one shell under runner {runner}, got {shells}"
+        shell = shells[0]
+        assert shell in in_job, "shell is not in the sandbox Job Object"
+        assert hostwin.process_owner(shell).lower() == "sbx-user"
+        assert not hostwin.process_elevated(shell)
+    except BaseException:
+        s.kill()
+        raise
+    assert s.close() == 0
 
 
 def test_78_stop_kills_tree(installed):

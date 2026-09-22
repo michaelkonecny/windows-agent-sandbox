@@ -31,7 +31,7 @@ class Engine:
         self._handles: dict[str, StartHandle] = {}
 
     def install(self) -> dict:
-        run_elevated("install_user")
+        run_elevated("install")
         warnings = []
         for kind in ShellKind:
             path = SHELL_EXECUTABLES.get(kind)
@@ -222,5 +222,7 @@ class Engine:
             "created_at": record.created_at.isoformat(),
         }
         if record.state == SandboxState.running:
-            result["pids"] = record.pids
+            from sbx.process import sandbox_pids
+            live = [p for p in sandbox_pids(record.name) if p not in record.pids]
+            result["pids"] = record.pids + live
         return result

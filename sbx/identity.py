@@ -66,6 +66,38 @@ def install_user(credentials_path: Path | None = None) -> str:
     return SANDBOX_USER
 
 
+def runner_paths() -> list[Path]:
+    """Paths the runner (engine re-invoked as sbx-user) must read and
+    execute: the Python installation and the sbx package root."""
+    import sys
+    paths = {Path(sys.base_prefix).resolve(), Path(__file__).resolve().parent.parent}
+    return sorted(paths)
+
+
+def _set_runner_access(user_sid: str, grant: bool) -> None:
+    sid_ptr = winapi.string_to_sid(user_sid)
+    try:
+        for path in runner_paths():
+            if grant:
+                winapi.grant_sid_access(
+                    str(path), sid_ptr,
+                    winapi.FILE_GENERIC_READ | winapi.FILE_GENERIC_EXECUTE,
+                )
+            else:
+                winapi.remove_sid_access(str(path), sid_ptr)
+    finally:
+        winapi.kernel32.LocalFree(sid_ptr)
+
+
+def grant_runner_access(user_sid: str) -> None:
+    _set_runner_access(user_sid, grant=True)
+    log.info("granted %s read+execute on %s", user_sid, runner_paths())
+
+
+def revoke_runner_access(user_sid: str) -> None:
+    _set_runner_access(user_sid, grant=False)
+
+
 def uninstall_user(credentials_path: Path | None = None) -> None:
     try:
         winapi.delete_user(SANDBOX_USER)

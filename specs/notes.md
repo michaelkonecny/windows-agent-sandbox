@@ -57,6 +57,16 @@ Deviations from `plan.md` and follow-ups noticed during implementation.
   on the token handle, obtained by adding it to `open_process_token`'s access
   mask.
 
+- Token and shell DACLs no longer NULL — the earlier NULL token DACL and
+  NULL default DACL let any process, including another sandbox's shell,
+  open a sandbox's processes with full access. Replaced by explicit DACLs
+  (see spec, Process launch mechanism). Integration tests 29-42 and 69-71
+  still pass with them.
+
+- Shell no longer inherits the runner's pipe ends — `create_pipe` made
+  both ends inheritable, so the shell held its own stdin write end and
+  never saw EOF. Needed for scriptable `sbx start` (test 73).
+
 ## Follow-ups
 
 - TUI — deferred per spec, not implemented.

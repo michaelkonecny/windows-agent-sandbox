@@ -22,6 +22,8 @@ ANTHROPIC_DOMAINS = [
 
 PID_FILE = Path(os.environ.get("LOCALAPPDATA", "")) / "sbx" / "proxy.pid"
 IDLE_TIMEOUT = 60
+# Fixed so the static firewall rule installed at `sbx install` can name it.
+PROXY_PORT = 47480
 
 
 @dataclass
@@ -376,4 +378,4 @@ def run_proxy_main() -> None:
         ],
     )
     server = ProxyServer()
-    asyncio.run(server.run())
+    asyncio.run(server.run(proxy_port=PROXY_PORT))

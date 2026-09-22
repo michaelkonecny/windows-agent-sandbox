@@ -58,6 +58,7 @@ SUB_CONTAINERS_AND_OBJECTS_INHERIT = 0x03
 FILE_ALL_ACCESS = 0x001F01FF
 FILE_GENERIC_READ = 0x00120089
 FILE_GENERIC_WRITE = 0x00120116
+FILE_GENERIC_EXECUTE = 0x001200A0
 
 BINDFLT_FLAG_READ_ONLY_MAPPING = 0x00000001
 
@@ -733,6 +734,30 @@ def user_exists(name: str) -> bool:
     return False
 
 
+advapi32.LookupAccountNameW.argtypes = [
+    wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p,
+    ctypes.POINTER(wintypes.DWORD), wintypes.LPWSTR,
+    ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(ctypes.c_int),
+]
+advapi32.LookupAccountNameW.restype = wintypes.BOOL
+
+
+def account_sid(name: str) -> str:
+    """S-1-... string SID of a local account."""
+    sid = (ctypes.c_byte * 68)()
+    sid_len = wintypes.DWORD(ctypes.sizeof(sid))
+    domain = ctypes.create_unicode_buffer(256)
+    domain_len = wintypes.DWORD(256)
+    use = ctypes.c_int()
+    ok = advapi32.LookupAccountNameW(
+        None, name, sid, ctypes.byref(sid_len),
+        domain, ctypes.byref(domain_len), ctypes.byref(use),
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return sid_to_string(ctypes.addressof(sid))
+
+
 # Shell elevation
 
 def shell_execute_elevated(file: str, params: str) -> int:
@@ -1203,6 +1228,7 @@ def create_process_as_user(
     env: ctypes.Array | None = None, cwd: str | None = None,
     attribute_list: int | None = None,
     std_handles: tuple[int, int, int] | None = None,
+    process_sa: SECURITY_ATTRIBUTES | None = None,
 ) -> tuple[int, int, int, int]:
     pi = PROCESS_INFORMATION()
     cmd = ctypes.create_unicode_buffer(command_line)
@@ -1228,7 +1254,8 @@ def create_process_as_user(
             si.hStdError = std_handles[2]
         si_ptr = ctypes.byref(si)
     ok = advapi32.CreateProcessAsUserW(
-        token, None, cmd, None, None, inherit_handles,
+        token, None, cmd,
+        ctypes.byref(process_sa) if process_sa else None, None, inherit_handles,
         creation_flags, ctypes.addressof(env) if env else None,
         cwd, si_ptr, ctypes.byref(pi),
     )
@@ -1275,6 +1302,29 @@ def terminate_job_object(job: int, exit_code: int = 1) -> None:
     ok = kernel32.TerminateJobObject(job, exit_code)
     if not ok:
         raise ctypes.WinError(ctypes.get_last_error())
+
+
+JobObjectBasicProcessIdList = 3
+
+
+def job_pids(job: int) -> list[int]:
+    """PIDs of the processes currently in a Job Object."""
+
+    class JOBOBJECT_BASIC_PROCESS_ID_LIST(ctypes.Structure):
+        _fields_ = [
+            ("NumberOfAssignedProcesses", wintypes.DWORD),
+            ("NumberOfProcessIdsInList", wintypes.DWORD),
+            ("ProcessIdList", ctypes.c_size_t * 512),
+        ]
+
+    info = JOBOBJECT_BASIC_PROCESS_ID_LIST()
+    ok = kernel32.QueryInformationJobObject(
+        job, JobObjectBasicProcessIdList,
+        ctypes.byref(info), ctypes.sizeof(info), None,
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return list(info.ProcessIdList[:info.NumberOfProcessIdsInList])
 
 
 def open_job_object(name: str, access: int = JOB_OBJECT_TERMINATE) -> int:
@@ -1472,3 +1522,89 @@ def set_kernel_object_null_dacl(handle: int) -> None:
     )
     if not ok:
         raise ctypes.WinError(ctypes.get_last_error())
+
+
+# Explicit security descriptors (SDDL)
+
+advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+    wintypes.LPCWSTR, wintypes.DWORD,
+    ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.ULONG),
+]
+advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+advapi32.GetSecurityDescriptorDacl.argtypes = [
+    ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+    ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL),
+]
+advapi32.GetSecurityDescriptorDacl.restype = wintypes.BOOL
+
+SDDL_REVISION_1 = 1
+TokenUser = 1
+
+
+class SecurityDescriptor:
+    """A self-relative SD parsed from SDDL; frees itself on close()."""
+
+    def __init__(self, sddl: str) -> None:
+        sd = ctypes.c_void_p()
+        ok = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl, SDDL_REVISION_1, ctypes.byref(sd), None,
+        )
+        if not ok:
+            raise ctypes.WinError(ctypes.get_last_error())
+        self.ptr = sd.value
+
+    def dacl(self) -> int:
+        present, defaulted = wintypes.BOOL(), wintypes.BOOL()
+        acl = ctypes.c_void_p()
+        ok = advapi32.GetSecurityDescriptorDacl(
+            self.ptr, ctypes.byref(present), ctypes.byref(acl), ctypes.byref(defaulted),
+        )
+        if not ok:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return acl.value
+
+    def attributes(self, inherit: bool = False) -> SECURITY_ATTRIBUTES:
+        sa = SECURITY_ATTRIBUTES()
+        sa.nLength = ctypes.sizeof(SECURITY_ATTRIBUTES)
+        sa.lpSecurityDescriptor = self.ptr
+        sa.bInheritHandle = inherit
+        return sa
+
+    def close(self) -> None:
+        if self.ptr:
+            kernel32.LocalFree(self.ptr)
+            self.ptr = None
+
+
+def set_kernel_object_dacl(handle: int, sddl: str) -> None:
+    sd = SecurityDescriptor(sddl)
+    try:
+        if not advapi32.SetKernelObjectSecurity(handle, DACL_SECURITY_INFORMATION, sd.ptr):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        sd.close()
+
+
+def set_token_default_dacl(token_handle: int, sddl: str) -> None:
+    """Default DACL for objects (incl. child processes) the token creates."""
+    sd = SecurityDescriptor(sddl)
+    try:
+        acl = ctypes.c_void_p(sd.dacl())
+        ok = advapi32.SetTokenInformation(
+            token_handle, TokenDefaultDacl, ctypes.byref(acl), ctypes.sizeof(acl),
+        )
+        if not ok:
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        sd.close()
+
+
+def token_user_sid(token_handle: int) -> str:
+    size = wintypes.DWORD()
+    advapi32.GetTokenInformation(token_handle, TokenUser, None, 0, ctypes.byref(size))
+    buf = ctypes.create_string_buffer(size.value)
+    if not advapi32.GetTokenInformation(
+        token_handle, TokenUser, buf, size, ctypes.byref(size),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return sid_to_string(ctypes.c_void_p.from_buffer(buf).value)

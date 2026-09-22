@@ -78,7 +78,7 @@ def _relaunch_unprivileged(config: pytest.Config) -> int:
         f"set {OPT_IN}=1\r\n"
         f"set {RELAUNCHED}=1\r\n"
         f'"{sys.executable}" -m pytest {args} > "{out}" 2>&1\r\n'
-        f'echo %ERRORLEVEL%> "{rc}"\r\n',
+        f'> "{rc}" echo %ERRORLEVEL%\r\n',  # `echo 0>` would redirect fd 0
         encoding="utf-8",
     )
     task = f"sbxsys-relaunch-{uuid.uuid4().hex[:8]}"
