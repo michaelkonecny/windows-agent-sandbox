@@ -229,7 +229,10 @@ Environment — nothing from the host crosses into the sandbox. The runner is st
 
 Sandbox user credentials are stored DPAPI-encrypted during install, read by the engine at start time.
 
-Kernel-object security — the shell process and its restricted token get explicit DACLs, never NULL ones: full access for SYSTEM, `sbx-user` and the sandbox's own synthetic SID; query/synchronize (process) or query (token) for Everyone, so the host can verify owner and elevation. For native shells the token's default DACL carries the same full-access ACEs, so the shell's children and objects are reachable by the same sandbox and no other — another sandbox passes the `sbx-user` check but fails the restricted-SID check.
+Kernel-object security — no sandbox object has a NULL DACL.
+- Shell process and restricted token: full access for SYSTEM, the runner's logon SID and the sandbox's synthetic SID; query/synchronize (process) or query (token) for Everyone, so the host can verify owner and elevation. The token's default DACL carries the same full-access ACEs, so the shell's children are reachable by the same sandbox and no other.
+- Job Object: SYSTEM and the host user only (stop, status, proxy lookups). The runner keeps its own handle; the shell inherits none.
+- Engine-runner I/O pipes: SYSTEM and the host user full, `sbx-user` read/write, one instance each, random name suffix passed on the runner's command line, so nothing can connect before the runner does.
 
 ### Assumptions validated
 

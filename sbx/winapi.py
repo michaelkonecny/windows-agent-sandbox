@@ -1145,12 +1145,13 @@ def is_console(handle: int) -> bool:
 
 def create_named_pipe(
     name: str, open_mode: int, buf_size: int = 4096,
+    max_instances: int = PIPE_UNLIMITED_INSTANCES,
     sa: SECURITY_ATTRIBUTES | None = None,
 ) -> int:
     handle = kernel32.CreateNamedPipeW(
         name, open_mode,
         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-        PIPE_UNLIMITED_INSTANCES, buf_size, buf_size, 0,
+        max_instances, buf_size, buf_size, 0,
         ctypes.byref(sa) if sa else None,
     )
     if handle == INVALID_HANDLE_VALUE:

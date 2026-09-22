@@ -24,10 +24,12 @@ SHELL_EXECUTABLES = {
     ShellKind.git_bash: r"C:\Program Files\Git\bin\bash.exe",
 }
 
-def _pipe_names(sandbox_name: str) -> tuple[str, str]:
+def _pipe_names(sandbox_name: str, nonce: str) -> tuple[str, str]:
+    """The random nonce keeps the names unguessable, so nothing can
+    connect to a pipe before the runner does."""
     return (
-        f"{PIPE_PREFIX}{sandbox_name}-in",
-        f"{PIPE_PREFIX}{sandbox_name}-out",
+        f"{PIPE_PREFIX}{sandbox_name}-{nonce}-in",
+        f"{PIPE_PREFIX}{sandbox_name}-{nonce}-out",
     )
 
 
@@ -50,13 +52,22 @@ PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _runner_cmd(
-    sandbox_name: str, sandbox_sid: str, shell_path: str, proxy_port: int | None,
+    sandbox_name: str, sandbox_sid: str, shell_path: str,
+    proxy_port: int | None, nonce: str, host_sid: str,
 ) -> str:
     port = "-" if proxy_port is None else str(proxy_port)
     return (
         f'"{sys.executable}" -m sbx _run {sandbox_name} {sandbox_sid} '
-        f'"{shell_path}" {port}'
+        f'"{shell_path}" {port} {nonce} {host_sid}'
     )
+
+
+def _current_user_sid() -> str:
+    token = winapi.open_process_token(winapi.TOKEN_QUERY)
+    try:
+        return winapi.token_user_sid(token)
+    finally:
+        winapi.close_handle(token)
 
 
 def shell_env(base: dict[str, str], proxy_port: int | None) -> dict[str, str]:
@@ -110,19 +121,29 @@ def start_sandbox(
 
     username, password = get_credentials(credentials_path)
 
-    pipe_in_name, pipe_out_name = _pipe_names(sandbox_name)
-    sa, _sd = winapi.create_null_dacl_sa()
-
-    pipe_in = winapi.create_named_pipe(
-        pipe_in_name, winapi.PIPE_ACCESS_OUTBOUND, sa=sa,
+    import secrets
+    nonce = secrets.token_hex(8)
+    host_sid = _current_user_sid()
+    pipe_in_name, pipe_out_name = _pipe_names(sandbox_name, nonce)
+    # Host: full; sbx-user (the runner): read/write; one instance each.
+    pipe_sd = winapi.SecurityDescriptor(
+        f"D:(A;;GA;;;SY)(A;;GA;;;{host_sid})"
+        f"(A;;GRGW;;;{winapi.account_sid(username)})"
     )
-    pipe_out = winapi.create_named_pipe(
-        pipe_out_name, winapi.PIPE_ACCESS_INBOUND, sa=sa,
-    )
+    sa = pipe_sd.attributes()
+    try:
+        pipe_in = winapi.create_named_pipe(
+            pipe_in_name, winapi.PIPE_ACCESS_OUTBOUND, sa=sa, max_instances=1,
+        )
+        pipe_out = winapi.create_named_pipe(
+            pipe_out_name, winapi.PIPE_ACCESS_INBOUND, sa=sa, max_instances=1,
+        )
+    finally:
+        pipe_sd.close()
 
     if network_preset == NetworkPreset.none:
         proxy_port = None
-    cmd = _runner_cmd(sandbox_name, sandbox_sid, shell_path, proxy_port)
+    cmd = _runner_cmd(sandbox_name, sandbox_sid, shell_path, proxy_port, nonce, host_sid)
     log.info("launching runner: %s", cmd)
 
     try:
@@ -213,7 +234,7 @@ def stop_sandbox(sandbox_name: str) -> None:
 
 def execute_runner(
     sandbox_name: str, sandbox_sid: str, shell_path: str,
-    proxy_port: int | None = None,
+    proxy_port: int | None, nonce: str, host_sid: str,
 ) -> int:
     """Runner entry point. Returns the shell's exit code."""
     import ctypes
@@ -238,7 +259,7 @@ def execute_runner(
 
     try:
         return _execute_runner_inner(
-            sandbox_name, sandbox_sid, shell_path, proxy_port, _log,
+            sandbox_name, sandbox_sid, shell_path, proxy_port, nonce, host_sid, _log,
         )
     except Exception:
         import traceback
@@ -270,13 +291,13 @@ def _relay(src: int, dst: int, done) -> None:
 
 def _execute_runner_inner(
     sandbox_name: str, sandbox_sid: str, shell_path: str,
-    proxy_port: int | None, _log,
+    proxy_port: int | None, nonce: str, host_sid: str, _log,
 ) -> int:
     import threading
 
     _log(f"runner start: name={sandbox_name} sid={sandbox_sid} shell={shell_path}")
 
-    pipe_in_name, pipe_out_name = _pipe_names(sandbox_name)
+    pipe_in_name, pipe_out_name = _pipe_names(sandbox_name, nonce)
     job_name_str = _job_name(sandbox_name)
 
     _log(f"opening pipes: in={pipe_in_name} out={pipe_out_name}")
@@ -295,8 +316,13 @@ def _execute_runner_inner(
          f"stdout_r={stdout_read} stdout_w={stdout_write}")
 
     _log(f"creating Job Object: {job_name_str}")
-    sa, _sd = winapi.create_null_dacl_sa()
-    job = winapi.create_job_object(job_name_str, sa=sa)
+    # Host user (stop, status, proxy lookups) and SYSTEM only; the runner
+    # keeps its own handle, sandboxed processes get none.
+    job_sd = winapi.SecurityDescriptor(f"D:(A;;GA;;;SY)(A;;GA;;;{host_sid})")
+    try:
+        job = winapi.create_job_object(job_name_str, sa=job_sd.attributes())
+    finally:
+        job_sd.close()
     winapi.set_job_kill_on_close(job)
     _log(f"Job Object created: {job}")
 
