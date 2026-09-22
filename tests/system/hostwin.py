@@ -235,3 +235,61 @@ def profile_paths() -> dict[str, str]:
                 except FileNotFoundError:
                     pass
     return out
+
+
+READ_CONTROL = 0x00020000
+SE_KERNEL_OBJECT = 6
+DACL_SECURITY_INFORMATION = 4
+advapi32.GetSecurityInfo.argtypes = [
+    wintypes.HANDLE, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p,
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+]
+advapi32.GetSecurityInfo.restype = wintypes.DWORD
+advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+    ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+    ctypes.POINTER(wintypes.LPWSTR), ctypes.c_void_p,
+]
+kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+
+
+def _dacl_sddl(handle: int) -> str:
+    sd = ctypes.c_void_p()
+    err = advapi32.GetSecurityInfo(
+        handle, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION,
+        None, None, None, None, ctypes.byref(sd),
+    )
+    if err:
+        raise ctypes.WinError(err)
+    out = wintypes.LPWSTR()
+    try:
+        if not advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            sd, 1, DACL_SECURITY_INFORMATION, ctypes.byref(out), None,
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return out.value
+    finally:
+        kernel32.LocalFree(sd)
+        if out:
+            kernel32.LocalFree(out)
+
+
+def process_dacl(pid: int) -> str:
+    h = _open_process(pid, READ_CONTROL | PROCESS_QUERY_LIMITED_INFORMATION)
+    try:
+        return _dacl_sddl(h)
+    finally:
+        kernel32.CloseHandle(h)
+
+
+def process_token_dacl(pid: int) -> str:
+    h = _open_process(pid)
+    tok = wintypes.HANDLE()
+    try:
+        if not advapi32.OpenProcessToken(h, READ_CONTROL, ctypes.byref(tok)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return _dacl_sddl(tok)
+        finally:
+            kernel32.CloseHandle(tok)
+    finally:
+        kernel32.CloseHandle(h)

@@ -331,6 +331,13 @@ def _execute_runner_inner(
     token = create_sandbox_token(sandbox_sid)
     _log(f"token created: {token}")
 
+    # The runner's token is unrestricted sbx-user, and sbx-user is in every
+    # sandbox's RestrictedSids — so lock the runner to SYSTEM and the host
+    # user before any sandboxed process exists. Done after the restricted
+    # token is built: that needs the runner's own token.
+    winapi.lock_current_process(f"D:(A;;GA;;;SY)(A;;GA;;;{host_sid})")
+    _log("runner locked to SYSTEM + host user")
+
     _log(f"launching shell: {shell_path}")
     from sbx.tokens import process_sddl
     shell_sd = winapi.SecurityDescriptor(

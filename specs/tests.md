@@ -69,6 +69,7 @@ Rules:
 ### Process isolation (per shell)
 
 98. [system] Host-side env var set on the `sbx start` process → not visible in the shell; writing into `%TEMP%` and `%USERPROFILE%` → OK (they're `sbx-user`'s, not the host's).
+99. [system] While a sandbox runs, the runner's process and token DACLs name only SYSTEM and the host user — read host-side.
 
 ## config
 

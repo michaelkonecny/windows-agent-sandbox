@@ -1799,3 +1799,19 @@ def user_environment(token_handle: int) -> dict[str, str]:
             offset += (len(entry) + 1) * ctypes.sizeof(ctypes.c_wchar)
     finally:
         userenv.DestroyEnvironmentBlock(block)
+
+
+kernel32.GetCurrentThread.restype = wintypes.HANDLE
+
+
+def lock_current_process(sddl: str) -> None:
+    """Replace the DACLs of this process, its current thread and its token,
+    and the token's default DACL (threads and objects created later)."""
+    for handle in (kernel32.GetCurrentProcess(), kernel32.GetCurrentThread()):
+        set_kernel_object_dacl(handle, sddl)
+    token = open_process_token(WRITE_DAC | TOKEN_ADJUST_DEFAULT | TOKEN_QUERY)
+    try:
+        set_token_default_dacl(token, sddl)
+        set_kernel_object_dacl(token, sddl)
+    finally:
+        close_handle(token)

@@ -71,10 +71,12 @@ Deviations from `plan.md` and follow-ups noticed during implementation.
   `Invoke-WebRequest`, .NET, WinHTTP) can't do HTTPS inside a sandbox.
   OpenSSL-based ones (Node, so Claude Code; Git's curl) are unaffected.
   System tests probe connectivity with CONNECT + plain HTTP instead.
-- Runner process and token keep Windows' default DACLs, which grant
-  `sbx-user` — in every sandbox's RestrictedSids. Needs a security review;
-  candidate fix: the runner sets explicit DACLs on its own process,
-  threads and token at startup.
+- Runner DACLs — Windows' defaults granted `sbx-user` full access to the
+  runner process (unrestricted token) and read to its logon SID, both in
+  every sandbox's RestrictedSids. The runner now locks its process, thread,
+  token and default DACL to SYSTEM + host user (test 99, host-side DACL
+  read). Worth an independent security review of the whole runner/shell
+  boundary anyway.
 
 - TUI — deferred per spec, not implemented.
 - Custom network presets — deferred per spec.
