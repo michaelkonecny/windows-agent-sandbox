@@ -268,6 +268,12 @@ Discoveries that affect the engine implementation:
 - Whether the engine should support "hot" config changes (modify mounts/network on a running sandbox) or require stop/recreate.
 - Log capture and forwarding from sandbox processes.
 
+## Known limitations
+
+Accepted trade-offs, not bugs.
+
+- No Windows-native TLS inside a sandbox — Schannel refuses to acquire client credentials for any token with RestrictedSids (`SEC_E_NO_CREDENTIALS`). Tools on the Windows TLS stack can't make HTTPS connections from a sandbox: System32 `curl.exe`, PowerShell `Invoke-WebRequest` / `Invoke-RestMethod`, .NET `HttpClient`, WinHTTP / WinINet. Tools bundling their own TLS work: Node (so Claude Code), Python, Git for Windows (OpenSSL backend), Git's `curl`. Accepted because restricted tokens are the isolation mechanism and the target agents use OpenSSL-based stacks. Found empirically on Windows 11 22621 (see notes.md); no Microsoft documentation of this behaviour was found.
+
 ## Non-goals
 
 - Cross-platform support — Windows only.

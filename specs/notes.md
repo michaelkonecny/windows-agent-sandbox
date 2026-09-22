@@ -51,6 +51,22 @@ Deviations from `plan.md` and follow-ups noticed during implementation.
   both ends inheritable, so the shell held its own stdin write end and
   never saw EOF. Needed for scriptable `sbx start` (test 73).
 
+- Runner DACLs locked — Windows' defaults granted `sbx-user` full access to
+  the runner process (unrestricted token) and read to its logon SID, both in
+  every sandbox's RestrictedSids. The runner now locks its process, thread,
+  token and default DACL to SYSTEM + host user (test 99).
+
+## Accepted limitations
+
+- No Windows-native TLS in sandboxes (see spec, Known limitations) —
+  Schannel's `AcquireCredentialsHandle` returns `SEC_E_NO_CREDENTIALS` for
+  any token with RestrictedSids. Reproduced with System32 curl: adding every
+  normal group SID (Authenticated Users, INTERACTIVE, LOCAL, RESTRICTED,
+  SYSTEM, Administrators, ...) to RestrictedSids didn't help; only dropping
+  RestrictedSids did, and neither privilege stripping nor the token DACLs
+  mattered. System tests probe connectivity with CONNECT + plain HTTP instead
+  of TLS.
+
 ## Follow-ups
 
 - Cygwin objects name the account SID — processes and shared memory a
@@ -64,19 +80,10 @@ Deviations from `plan.md` and follow-ups noticed during implementation.
 - Mount sources with an OWNER RIGHTS ACE (e.g. dirs from Python 3.13+
   `tempfile.mkdtemp`) — files the sandbox creates there are owned by
   `sbx-user` and unreadable to the host.
-- Schannel fails under the restricted token — `AcquireCredentialsHandle`
-  returns `SEC_E_NO_CREDENTIALS` for any token with RestrictedSids (tried
-  adding every normal group SID; only dropping RestrictedSids fixes it).
-  So Windows-native TLS clients (System32 curl, PowerShell
-  `Invoke-WebRequest`, .NET, WinHTTP) can't do HTTPS inside a sandbox.
-  OpenSSL-based ones (Node, so Claude Code; Git's curl) are unaffected.
-  System tests probe connectivity with CONNECT + plain HTTP instead.
-- Runner DACLs — Windows' defaults granted `sbx-user` full access to the
-  runner process (unrestricted token) and read to its logon SID, both in
-  every sandbox's RestrictedSids. The runner now locks its process, thread,
-  token and default DACL to SYSTEM + host user (test 99, host-side DACL
-  read). Worth an independent security review of the whole runner/shell
-  boundary anyway.
+- Security review — the runner/shell boundary (runner holds an unrestricted
+  `sbx-user` token; `sbx-user` is in every sandbox's RestrictedSids) was
+  hardened and checked host-side only (test 99), never probed from inside a
+  sandbox. Worth an independent review.
 
 - TUI — deferred per spec, not implemented.
 - Custom network presets — deferred per spec.
