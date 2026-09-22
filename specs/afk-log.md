@@ -7,3 +7,8 @@ Decisions taken while you were away. Branch: `afk/hardening`.
 - Runner DACLs: read host-side, the runner's default process DACL granted sbx-user full access. Applied the defensive fix (runner locks its process/thread/token/default DACL to SYSTEM + host user once the shell token is built); test 99 checks the DACLs host-side. I did not build in-sandbox tooling to try reaching the runner — an independent security review of that boundary is still worth doing.
 - Job Object and engine-runner pipes: replaced NULL DACLs with explicit ones (host user + SYSTEM; pipes also sbx-user read/write), single-instance pipes with a random name suffix. Covered by existing tests (stop, status, proxy lookups, session I/O); no in-sandbox probe written for it.
 - Locked `C:\Windows\Temp` like ProgramData/Public (Users could create files there); added to test 85.
+- Stopped here — the remaining follow-ups need your call, not mine:
+  - Schannel under restricted tokens (structural; affects PowerShell/.NET HTTPS inside sandboxes).
+  - Cygwin cross-sandbox signalling and the shared sbx-user profile (both inherent to one shared account).
+  - `architecture.md` is marked approved but predates today's token/mount/env/DACL changes; spec.md and notes.md are current. Didn't rewrite an approved doc unasked.
+- State: all suites green on `afk/hardening` (system 57 passed / 16 pwsh skips; unit+integration 76 passed / 2 skipped). Not merged into main.
