@@ -45,25 +45,27 @@ def resolve_shell(shell: ShellKind) -> str:
     raise ProcessError(f"shell not found: {shell.value}")
 
 
-def _runner_cmd(sandbox_name: str, sandbox_sid: str, shell_path: str) -> str:
-    python = sys.executable
-    return f'"{python}" -m sbx _run {sandbox_name} {sandbox_sid} "{shell_path}"'
+# The runner starts here so `-m sbx` finds the package without PYTHONPATH.
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
 
-def build_env(
-    network_preset: NetworkPreset,
-    proxy_port: int | None = None,
-    base_env: dict[str, str] | None = None,
-) -> dict[str, str]:
-    env = dict(base_env if base_env is not None else os.environ)
-    if network_preset in (NetworkPreset.claude_api_only, NetworkPreset.all):
-        if proxy_port is not None:
-            env["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy_port}"
-    else:
-        env.pop("HTTPS_PROXY", None)
-    project_root = str(Path(__file__).parent.parent)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{project_root};{existing}" if existing else project_root
+def _runner_cmd(
+    sandbox_name: str, sandbox_sid: str, shell_path: str, proxy_port: int | None,
+) -> str:
+    port = "-" if proxy_port is None else str(proxy_port)
+    return (
+        f'"{sys.executable}" -m sbx _run {sandbox_name} {sandbox_sid} '
+        f'"{shell_path}" {port}'
+    )
+
+
+def shell_env(base: dict[str, str], proxy_port: int | None) -> dict[str, str]:
+    """The shell's environment: sbx-user's own block (`base`) plus
+    HTTPS_PROXY when the sandbox has a proxy. Nothing from the host."""
+    env = dict(base)
+    env.pop("HTTPS_PROXY", None)
+    if proxy_port is not None:
+        env["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy_port}"
     return env
 
 
@@ -118,20 +120,18 @@ def start_sandbox(
         pipe_out_name, winapi.PIPE_ACCESS_INBOUND, sa=sa,
     )
 
-    env = build_env(network_preset, proxy_port)
-    env["USERNAME"] = username
-    env_block = winapi.make_env_block(env)
-
-    cmd = _runner_cmd(sandbox_name, sandbox_sid, shell_path)
+    if network_preset == NetworkPreset.none:
+        proxy_port = None
+    cmd = _runner_cmd(sandbox_name, sandbox_sid, shell_path, proxy_port)
     log.info("launching runner: %s", cmd)
 
     try:
+        # No env block: the runner gets sbx-user's profile environment,
+        # never the host's (which may hold secrets).
         proc_h, thread_h, pid, _ = winapi.create_process_with_logon(
             username, ".", password, cmd,
-            creation_flags=(
-                winapi.CREATE_UNICODE_ENVIRONMENT | winapi.CREATE_NO_WINDOW
-            ),
-            env=env_block,
+            creation_flags=winapi.CREATE_NO_WINDOW,
+            cwd=str(PACKAGE_ROOT),
         )
     except OSError as e:
         winapi.close_handle(pipe_in)
@@ -211,7 +211,10 @@ def stop_sandbox(sandbox_name: str) -> None:
     log.info("terminated sandbox %s", sandbox_name)
 
 
-def execute_runner(sandbox_name: str, sandbox_sid: str, shell_path: str) -> int:
+def execute_runner(
+    sandbox_name: str, sandbox_sid: str, shell_path: str,
+    proxy_port: int | None = None,
+) -> int:
     """Runner entry point. Returns the shell's exit code."""
     import ctypes
     SEM_FAILCRITICALERRORS = 0x0001
@@ -234,7 +237,9 @@ def execute_runner(sandbox_name: str, sandbox_sid: str, shell_path: str) -> int:
                 pass
 
     try:
-        return _execute_runner_inner(sandbox_name, sandbox_sid, shell_path, _log)
+        return _execute_runner_inner(
+            sandbox_name, sandbox_sid, shell_path, proxy_port, _log,
+        )
     except Exception:
         import traceback
         _log(traceback.format_exc())
@@ -265,7 +270,7 @@ def _relay(src: int, dst: int, done) -> None:
 
 def _execute_runner_inner(
     sandbox_name: str, sandbox_sid: str, shell_path: str,
-    _log,
+    proxy_port: int | None, _log,
 ) -> int:
     import threading
 
@@ -305,10 +310,17 @@ def _execute_runner_inner(
     shell_sd = winapi.SecurityDescriptor(
         process_sddl(winapi.token_logon_sid(token), sandbox_sid),
     )
+    env_block = winapi.make_env_block(
+        shell_env(winapi.user_environment(token), proxy_port),
+    )
+    from sbx.mounts import SANDBOX_USER_HOME
+    workspace = SANDBOX_USER_HOME / sandbox_name
     try:
         proc_h, thread_h, shell_pid, _ = winapi.create_process_as_user(
             token, shell_path,
-            creation_flags=winapi.CREATE_SUSPENDED,
+            creation_flags=winapi.CREATE_SUSPENDED | winapi.CREATE_UNICODE_ENVIRONMENT,
+            env=env_block,
+            cwd=str(workspace) if workspace.is_dir() else None,
             std_handles=(stdin_read, stdout_write, stdout_write),
             process_sa=shell_sd.attributes(),
         )

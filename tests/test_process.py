@@ -10,7 +10,6 @@ from sbx.config import NetworkPreset
 from sbx.identity import generate_sid, get_credentials
 from sbx.process import (
     StartHandle,
-    build_env,
     start_sandbox,
     stop_sandbox,
     _job_name,

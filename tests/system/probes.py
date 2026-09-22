@@ -125,6 +125,17 @@ class Shell:
             return self._verdict(pid, f'[ -n "${var}" ]')
         return f"if ($env:{var}) {{ 'PROBE {pid} OK' }} else {{ 'PROBE {pid} DENIED' }}"
 
+    def write_in_env_dir(self, pid: str, var: str, content: str) -> str:
+        """OK iff a file can be written in the directory env var `var` names."""
+        name = "sbxsys-probe.txt"
+        if self.name == "cmd":
+            return self._verdict(pid, f'(echo {content})>"%{var}%\\{name}" 2>nul')
+        if self.name == "git-bash":
+            return self._verdict(pid, f"printf '%s\\n' '{content}' 2>/dev/null >\"${var}/{name}\"")
+        return self._verdict(
+            pid, f'Set-Content -LiteralPath "$env:{var}\\{name}" -Value \'{content}\' -ErrorAction Stop',
+        )
+
     def ready(self, pid: str = "ready") -> str:
         """Always prints OK — marks that the shell got this far."""
         if self._ps:

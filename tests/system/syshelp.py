@@ -24,9 +24,10 @@ WORKSPACE = Path(r"C:\Users\sbx-user")
 JOB_PREFIX = "Global\\sbx-job-"
 
 
-def _env() -> dict[str, str]:
+def _env(extra: dict[str, str] | None = None) -> dict[str, str]:
     env = dict(os.environ)
     env.pop("HTTPS_PROXY", None)
+    env.update(extra or {})
     return env
 
 
@@ -113,12 +114,16 @@ def _script(shell: Shell, lines: list[str]) -> bytes:
     return ("\n".join(body) + "\n").encode("utf-8")
 
 
-def run_session(project: Path, shell: Shell, lines: list[str]) -> SessionResult:
-    """One `sbx start` with a probe script on stdin, ending with `exit`."""
+def run_session(
+    project: Path, shell: Shell, lines: list[str],
+    env: dict[str, str] | None = None,
+) -> SessionResult:
+    """One `sbx start` with a probe script on stdin, ending with `exit`.
+    `env` adds variables to the host-side `sbx start` process."""
     try:
         res = subprocess.run(
             [sys.executable, "-m", "sbx", "start", str(project)],
-            cwd=REPO, env=_env(), input=_script(shell, lines),
+            cwd=REPO, env=_env(env), input=_script(shell, lines),
             capture_output=True, timeout=SESSION_TIMEOUT,
         )
     except subprocess.TimeoutExpired as e:

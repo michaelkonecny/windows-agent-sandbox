@@ -225,6 +225,8 @@ Command runner pattern — avoids elevation for start/stop.
 3. The runner calls `CreateProcessAsUser` with the restricted token to spawn the configured shell. This works without special privileges because the restricted token is derived from the runner's own logon session.
 4. The runner stays alive to relay I/O between the engine CLI and the sandboxed shell, and exits when the shell exits.
 
+Environment — nothing from the host crosses into the sandbox. The runner is started with no environment block, so it gets `sbx-user`'s profile environment; the engine passes the proxy port on the runner's command line. The shell's environment is `sbx-user`'s default block (`CreateEnvironmentBlock`: its own TEMP, USERPROFILE, APPDATA) plus `HTTPS_PROXY` when the preset has one. The shell starts in the sandbox workspace, `C:\Users\sbx-user\<sandbox-name>`.
+
 Sandbox user credentials are stored DPAPI-encrypted during install, read by the engine at start time.
 
 Kernel-object security — the shell process and its restricted token get explicit DACLs, never NULL ones: full access for SYSTEM, `sbx-user` and the sandbox's own synthetic SID; query/synchronize (process) or query (token) for Everyone, so the host can verify owner and elevation. For native shells the token's default DACL carries the same full-access ACEs, so the shell's children and objects are reachable by the same sandbox and no other — another sandbox passes the `sbx-user` check but fails the restricted-SID check.

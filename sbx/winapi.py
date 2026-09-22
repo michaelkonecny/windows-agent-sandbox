@@ -1769,3 +1769,32 @@ def delete_profile(sid: str) -> None:
         err = ctypes.get_last_error()
         if err != ERROR_FILE_NOT_FOUND:
             raise ctypes.WinError(err)
+
+
+userenv.CreateEnvironmentBlock.argtypes = [
+    ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.BOOL,
+]
+userenv.CreateEnvironmentBlock.restype = wintypes.BOOL
+userenv.DestroyEnvironmentBlock.argtypes = [ctypes.c_void_p]
+userenv.DestroyEnvironmentBlock.restype = wintypes.BOOL
+
+
+def user_environment(token_handle: int) -> dict[str, str]:
+    """The default environment of the token's user (its profile's TEMP,
+    USERPROFILE, ...), without inheriting the calling process's env."""
+    block = ctypes.c_void_p()
+    if not userenv.CreateEnvironmentBlock(ctypes.byref(block), token_handle, False):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        env: dict[str, str] = {}
+        offset = 0
+        while True:
+            entry = ctypes.wstring_at(block.value + offset)
+            if not entry:
+                return env
+            key, sep, value = entry.partition("=")
+            if sep and key:
+                env[key] = value
+            offset += (len(entry) + 1) * ctypes.sizeof(ctypes.c_wchar)
+    finally:
+        userenv.DestroyEnvironmentBlock(block)

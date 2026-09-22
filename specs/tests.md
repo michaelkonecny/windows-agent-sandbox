@@ -66,6 +66,10 @@ Rules:
 95. [system] Host process reaches `https://example.com` while sandboxes run and after uninstall — firewall rules hit only `sbx-user`.
 96. [system] A sandbox that reaches the proxy's control port (loopback isn't firewalled) can't widen its own policy or stop the proxy — control commands need the secret from the host-only PID file.
 
+### Process isolation (per shell)
+
+98. [system] Host-side env var set on the `sbx start` process → not visible in the shell; writing into `%TEMP%` and `%USERPROFILE%` → OK (they're `sbx-user`'s, not the host's).
+
 ## config
 
 1. `scaffold_config` creates `.sandbox/config.json` with valid default content (parseable by `load_config`).
