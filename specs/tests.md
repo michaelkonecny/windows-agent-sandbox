@@ -22,8 +22,11 @@ Rules:
 - Skip the whole suite unless `SBX_SYSTEM_TESTS=i-understand-this-changes-the-machine` — the value is the acknowledgement; typing it means the runner has read what the suite does. Any other value (incl. `1`) → skip with a message listing the changes below.
 - List the changes in the skip message, a session-start banner, and `tests/system/README.md`: creates/deletes the `sbx-user` account, adds/removes firewall rules, creates bind links, edits ACLs on fixture dirs, uninstalls sbx at session end. Say it's meant for a disposable VM.
 - Wipe leftover sbx state at session start (`sbx uninstall`, delete `%LOCALAPPDATA%\sbx`) — clean baseline instead of refusing.
-- Refuse to run elevated — `start` must be proven to work unprivileged. Approve UAC prompts by hand, or once per VM set `ConsentPromptBehaviorAdmin=0` (elevate without prompting; keeps the split token, so the unprivileged check still holds). Document this in the README; never change it from the suite.
-- Keep UAC prompts few: one install per session, one create per sandbox.
+- Run fully unattended — no UAC prompt may appear. Mechanism: VM provisioned once with `ConsentPromptBehaviorAdmin=0` (elevate without prompting). `sbx`'s own `runas` elevation then succeeds silently; the admin's split token (admin runs unprivileged until elevated) stays, so `start` still runs unprivileged.
+- Provide `tests/system/setup_vm.py` — run once, elevated; sets `ConsentPromptBehaviorAdmin=0`, leaves `EnableLUA=1`. Never change UAC settings from the suite itself.
+- Check preconditions at session start and fail fast naming the fix: `EnableLUA=1`, `ConsentPromptBehaviorAdmin=0`, current user in `Administrators`.
+- Run the suite unprivileged, so `start` is proven to work without admin. If launched elevated, relaunch pytest unprivileged via a one-shot Task Scheduler task (run level `LIMITED`, as the logged-on user), wait for it, relay its output, exit with its exit code, delete the task. Rely on `schtasks` only; no third-party de-elevation tools.
+- Assert inside the suite (after any relaunch) that the process is not elevated — guards against a relaunch that silently stayed elevated.
 - Drive every step through the `sbx` CLI as a subprocess; never import `sbx`, mock, or call `setup_test_env`.
 - Prefix every sandbox name with `sbxsys-` — makes leftovers identifiable.
 - Uninstall in a session-scoped finalizer, even after failures; delete fixture projects and the host secret.
