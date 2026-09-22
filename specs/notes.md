@@ -64,6 +64,13 @@ Deviations from `plan.md` and follow-ups noticed during implementation.
 - Mount sources with an OWNER RIGHTS ACE (e.g. dirs from Python 3.13+
   `tempfile.mkdtemp`) — files the sandbox creates there are owned by
   `sbx-user` and unreadable to the host.
+- Schannel fails under the restricted token — `AcquireCredentialsHandle`
+  returns `SEC_E_NO_CREDENTIALS` for any token with RestrictedSids (tried
+  adding every normal group SID; only dropping RestrictedSids fixes it).
+  So Windows-native TLS clients (System32 curl, PowerShell
+  `Invoke-WebRequest`, .NET, WinHTTP) can't do HTTPS inside a sandbox.
+  OpenSSL-based ones (Node, so Claude Code; Git's curl) are unaffected.
+  System tests probe connectivity with CONNECT + plain HTTP instead.
 - Job Object and I/O pipes still use NULL DACLs — another sandbox could
   open them. Same fix as the token/process DACLs.
 

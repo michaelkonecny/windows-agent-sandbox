@@ -10,6 +10,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 CURL = r"C:\Windows\System32\curl.exe"
 CURL_OPTS = "-s -o NUL --connect-timeout 5 --max-time 10"
@@ -21,14 +22,16 @@ def parse(output: str) -> dict[str, str]:
     return {m.group(1): m.group(2) for m in _LINE.finditer(output)}
 
 
-def _curl_args(url: str, via: str) -> str:
-    """via: 'env' — honour HTTPS_PROXY; 'direct' — bypass any proxy;
-    anything else — explicit proxy URL."""
-    if via == "env":
-        return f"{CURL_OPTS} {url}"
-    if via == "direct":
-        return f'{CURL_OPTS} --noproxy "*" {url}'
-    return f"{CURL_OPTS} -x {via} {url}"
+def _curl_args(url: str, proxy: str | None) -> str:
+    """Reach `url`'s host on port 443 without a TLS handshake: CONNECT
+    through `proxy` (or connect directly if None), then send plain HTTP —
+    the server answers with an HTTP status (400), which proves the
+    connection was made. No TLS because Schannel (System32 curl's TLS)
+    fails under restricted tokens — see notes.md, Follow-ups."""
+    target = f"http://{urlparse(url).hostname}:443/"
+    if proxy is None:
+        return f'{CURL_OPTS} --noproxy "*" {target}'
+    return f'{CURL_OPTS} -p -x "{proxy}" {target}'
 
 
 @dataclass(frozen=True)
@@ -97,8 +100,13 @@ class Shell:
         )
 
     def http(self, pid: str, url: str, via: str = "env") -> str:
-        """OK iff curl gets any HTTP response (see `_curl_args` for `via`)."""
-        args = _curl_args(url, via)
+        """OK iff a connection to `url`'s host gets any HTTP response.
+        via: 'env' — through $HTTPS_PROXY; 'direct' — no proxy; anything
+        else — that proxy URL."""
+        env_ref = {"cmd": "%HTTPS_PROXY%", "git-bash": "$HTTPS_PROXY"}.get(
+            self.name, "$env:HTTPS_PROXY")
+        proxy = {"env": env_ref, "direct": None}.get(via, via)
+        args = _curl_args(url, proxy)
         if self.name == "cmd":
             return self._verdict(pid, f"{CURL} {args}")
         args = args.replace('"*"', "'*'")  # no globbing/expansion of *
