@@ -834,6 +834,8 @@ SECURITY_DESCRIPTOR_REVISION = 1
 
 PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_TERMINATE = 0x0001
+SYNCHRONIZE = 0x00100000
 
 ERROR_PIPE_CONNECTED = 535
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
@@ -1743,3 +1745,12 @@ def deny_create_in_dir(path: str, sid_ptr: int) -> None:
 def remove_dir_aces(path: str, sid_ptr: int) -> None:
     """Remove every explicit ACE for `sid` from `path` itself."""
     _edit_dacl_in_place(path, _explicit_access(sid_ptr, REVOKE_ACCESS, 0))
+
+
+kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+kernel32.TerminateProcess.restype = wintypes.BOOL
+
+
+def terminate_process(handle: int, exit_code: int = 1) -> None:
+    if not kernel32.TerminateProcess(handle, exit_code):
+        raise ctypes.WinError(ctypes.get_last_error())

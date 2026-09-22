@@ -76,13 +76,17 @@ def _remove_rules_quiet() -> None:
 
 
 def _is_process_alive(pid: int) -> bool:
+    from sbx import winapi
     try:
-        from sbx import winapi
-        h = winapi.open_process(pid, winapi.PROCESS_QUERY_LIMITED_INFORMATION)
-        winapi.close_handle(h)
-        return True
+        h = winapi.open_process(
+            pid, winapi.PROCESS_QUERY_LIMITED_INFORMATION | winapi.SYNCHRONIZE,
+        )
     except OSError:
         return False
+    try:
+        return winapi.wait_for_process(h, timeout_ms=0) is None
+    finally:
+        winapi.close_handle(h)
 
 
 def ensure_proxy_running() -> ProxyControl:
@@ -152,3 +156,28 @@ def deregister_sandbox(job_name: str) -> None:
         log.info("deregistered sandbox %s", job_name)
     except (ConnectionError, OSError):
         log.warning("proxy not reachable for deregister of %s", job_name)
+
+
+def stop_proxy(timeout: float = 5.0) -> None:
+    """Stop the proxy if it's running and remove its PID file."""
+    import time
+    from sbx import winapi
+    from sbx.proxy import _remove_pid_file
+
+    info = read_pid_file()
+    if info is None:
+        return
+    pid = info.get("pid", 0)
+    if pid and _is_process_alive(pid):
+        ProxyControl(info.get("control_port", 0), info.get("secret", "")).stop()
+        deadline = time.monotonic() + timeout
+        while _is_process_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if _is_process_alive(pid):
+            h = winapi.open_process(pid, winapi.PROCESS_TERMINATE)
+            try:
+                winapi.terminate_process(h)
+            finally:
+                winapi.close_handle(h)
+    _remove_pid_file()
+    log.info("proxy stopped")

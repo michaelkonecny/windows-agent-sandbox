@@ -201,6 +201,8 @@ class Engine:
             except Exception as e:
                 log.warning("failed to destroy %s: %s", record.name, e)
 
+        from sbx.network import stop_proxy
+        stop_proxy()
         run_elevated("uninstall_cleanup")
         log.info("uninstalled sbx")
 

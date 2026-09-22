@@ -33,7 +33,7 @@ Two layers:
 4. Start — engine re-invokes itself as the sandbox user (via `CreateProcessWithLogonW`), creates a restricted token from that user's token, and launches an interactive shell under it. The user launches agents or other tools from within this shell. Does not require elevation.
 5. Stop — engine terminates sandbox processes.
 6. Destroy — engine removes bind links, ACLs, and sandbox metadata. Requires elevation.
-7. Uninstall — engine removes shared user account, shared SID ACLs, WFP rules. Requires elevation.
+7. Uninstall — engine destroys all sandboxes, stops the proxy, removes the shared user account and group, the install-time ACLs, WFP rules. Requires elevation.
 
 ## Configuration
 
