@@ -92,10 +92,22 @@ class StartHandle:
     pipe_out: int
     job_name: str
 
-    def close(self) -> None:
-        winapi.close_handle(self.runner_process)
+    def close_input(self) -> None:
+        """Signal EOF to the shell's stdin."""
         winapi.close_handle(self.pipe_in)
-        winapi.close_handle(self.pipe_out)
+        self.pipe_in = 0
+
+    def runner_exited(self) -> bool:
+        return winapi.wait_for_process(self.runner_process, timeout_ms=0) is not None
+
+    def exit_code(self) -> int:
+        """Block until the runner exits; return the shell's exit code."""
+        return winapi.wait_for_process(self.runner_process)
+
+    def close(self) -> None:
+        for attr in ("runner_process", "pipe_in", "pipe_out"):
+            winapi.close_handle(getattr(self, attr))
+            setattr(self, attr, 0)
 
 
 def start_sandbox(
@@ -203,7 +215,8 @@ def stop_sandbox(sandbox_name: str) -> None:
     log.info("terminated sandbox %s", sandbox_name)
 
 
-def execute_runner(sandbox_name: str, sandbox_sid: str, shell_path: str) -> None:
+def execute_runner(sandbox_name: str, sandbox_sid: str, shell_path: str) -> int:
+    """Runner entry point. Returns the shell's exit code."""
     import ctypes
     SEM_FAILCRITICALERRORS = 0x0001
     SEM_NOGPFAULTERRORBOX = 0x0002
@@ -225,7 +238,7 @@ def execute_runner(sandbox_name: str, sandbox_sid: str, shell_path: str) -> None
                 pass
 
     try:
-        _execute_runner_inner(sandbox_name, sandbox_sid, shell_path, _log)
+        return _execute_runner_inner(sandbox_name, sandbox_sid, shell_path, _log)
     except Exception:
         import traceback
         _log(traceback.format_exc())
@@ -235,28 +248,29 @@ def execute_runner(sandbox_name: str, sandbox_sid: str, shell_path: str) -> None
             _log_file.close()
 
 
-def _relay(src: int, dst: int, _log, label: str, stop_event) -> None:
-    """Relay data from src pipe to dst pipe until stop_event is set."""
-    buf_size = 4096
-    while not stop_event.is_set():
+def _relay(src: int, dst: int, done) -> None:
+    """Copy src pipe to dst pipe until src breaks, dst breaks, or `done`
+    is set and src has nothing buffered."""
+    while True:
         try:
             avail = winapi.peek_pipe(src)
         except OSError:
-            break
+            return
         if avail > 0:
             try:
-                data = winapi.read_file(src, min(avail, buf_size))
-                winapi.write_file(dst, data)
+                winapi.write_file(dst, winapi.read_file(src, min(avail, 4096)))
             except OSError:
-                break
+                return
+        elif done.is_set():
+            return
         else:
-            stop_event.wait(0.01)
+            done.wait(0.01)
 
 
 def _execute_runner_inner(
     sandbox_name: str, sandbox_sid: str, shell_path: str,
     _log,
-) -> None:
+) -> int:
     import threading
 
     _log(f"runner start: name={sandbox_name} sid={sandbox_sid} shell={shell_path}")
@@ -272,6 +286,10 @@ def _execute_runner_inner(
     _log("creating anonymous pipes for shell I/O")
     stdin_read, stdin_write = winapi.create_pipe(inheritable=True)
     stdout_read, stdout_write = winapi.create_pipe(inheritable=True)
+    # The runner's ends must not leak into the shell: a shell holding its
+    # own stdin write end never sees EOF.
+    winapi.set_handle_inheritable(stdin_write, False)
+    winapi.set_handle_inheritable(stdout_read, False)
     _log(f"shell pipes: stdin_r={stdin_read} stdin_w={stdin_write} "
          f"stdout_r={stdout_read} stdout_w={stdout_write}")
 
@@ -315,13 +333,16 @@ def _execute_runner_inner(
     winapi.resume_thread(thread_h)
     winapi.close_handle(thread_h)
 
-    stop = threading.Event()
-    relay_in = threading.Thread(
-        target=_relay, args=(pipe_in, stdin_write, _log, "in", stop),
-        daemon=True,
-    )
+    shell_exited = threading.Event()
+
+    def _relay_in() -> None:
+        _relay(pipe_in, stdin_write, shell_exited)
+        # Engine closed its end (stdin EOF) — pass EOF on to the shell.
+        winapi.close_handle(stdin_write)
+
+    relay_in = threading.Thread(target=_relay_in, daemon=True)
     relay_out = threading.Thread(
-        target=_relay, args=(stdout_read, pipe_out, _log, "out", stop),
+        target=_relay, args=(stdout_read, pipe_out, shell_exited),
         daemon=True,
     )
     relay_in.start()
@@ -332,15 +353,15 @@ def _execute_runner_inner(
     exit_code = winapi.wait_for_process(proc_h)
     _log(f"shell exited with code {exit_code}")
 
-    stop.set()
+    shell_exited.set()
+    relay_out.join(timeout=5)
     relay_in.join(timeout=2)
-    relay_out.join(timeout=2)
 
     winapi.close_handle(proc_h)
     winapi.close_handle(token)
     winapi.close_handle(job)
-    winapi.close_handle(stdin_write)
     winapi.close_handle(stdout_read)
-    winapi.close_handle(pipe_in)
     winapi.close_handle(pipe_out)
+    winapi.close_handle(pipe_in)
     _log("runner cleanup done")
+    return exit_code

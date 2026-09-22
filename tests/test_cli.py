@@ -145,3 +145,76 @@ def test_e2e_cli_lifecycle(tmp_path):
 
         # verify sandbox removed from store
         assert Store(store_file).get(project) is None
+
+
+@pytest.fixture
+def piped_sandbox(tmp_path):
+    """A created cmd sandbox whose store and credentials live under a
+    temp LOCALAPPDATA, so a `python -m sbx start` subprocess can find it."""
+    import sys
+    from sbx.elevation import run_elevated
+    from sbx.identity import store_credentials, SANDBOX_USER
+    from sbx.store import Store
+
+    python_dir = str(Path(sys.executable).parent)
+    project_dir = str(Path(__file__).parent.parent)
+    try:
+        result = run_elevated("setup_test_env", {
+            "grant_paths": [python_dir, project_dir],
+        })
+    except Exception:
+        pytest.skip("cannot set up test environment (UAC denied)")
+
+    appdata = tmp_path / "appdata"
+    store_credentials(
+        SANDBOX_USER, result["password"], appdata / "sbx" / "credentials.json",
+    )
+
+    project = (tmp_path / "piped").resolve()
+    (project / ".sandbox").mkdir(parents=True)
+    config_file = project / ".sandbox" / "config.json"
+    config_file.write_text(json.dumps({
+        "mounts": [{"source": str(project), "target": "repo"}],
+        "shell": "cmd",
+        "network": "none",
+    }))
+    name = f"piped-{os.getpid()}"
+    engine = Engine(store=Store(appdata / "sbx" / "sandboxes.json"))
+    with mock.patch("sbx.engine.run_elevated", return_value={"created": True}):
+        engine.create(config_file, name=name)
+
+    env = dict(os.environ, LOCALAPPDATA=str(appdata), PYTHONPATH=project_dir)
+    yield project, env
+    from sbx.process import stop_sandbox
+    try:
+        stop_sandbox(name)
+    except Exception:
+        pass
+
+
+def _sbx_start(project, env, script: bytes):
+    import subprocess
+    import sys
+    return subprocess.run(
+        [sys.executable, "-m", "sbx", "start", str(project)],
+        input=script, capture_output=True, env=env, timeout=60,
+    )
+
+
+@pytest.mark.integration
+def test_start_piped_stdin_exit(piped_sandbox):
+    """Test 73: piped stdin is relayed to the shell; `exit N` ends the
+    session and becomes the CLI's exit code."""
+    project, env = piped_sandbox
+    res = _sbx_start(project, env, b"echo PIPED_OK\nexit 7\n")
+    assert b"PIPED_OK" in res.stdout, res.stderr
+    assert res.returncode == 7, res.stderr
+
+
+@pytest.mark.integration
+def test_start_piped_stdin_eof(piped_sandbox):
+    """Test 73: stdin EOF without `exit` ends the session too."""
+    project, env = piped_sandbox
+    res = _sbx_start(project, env, b"echo EOF_OK\n")
+    assert b"EOF_OK" in res.stdout, res.stderr
+    assert res.returncode == 0, res.stderr

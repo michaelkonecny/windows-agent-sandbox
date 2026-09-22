@@ -11,7 +11,7 @@ elif len(sys.argv) >= 2 and sys.argv[1] == "_proxy":
 elif len(sys.argv) >= 5 and sys.argv[1] == "_run":
     from sbx.process import execute_runner
 
-    execute_runner(sys.argv[2], sys.argv[3], sys.argv[4])
+    sys.exit(execute_runner(sys.argv[2], sys.argv[3], sys.argv[4]))
 else:
     from sbx.cli import main
 

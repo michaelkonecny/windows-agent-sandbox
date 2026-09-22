@@ -137,7 +137,7 @@ class Engine:
 
     def stop(self, project_path: str | Path) -> None:
         from sbx.network import deregister_sandbox
-        from sbx.process import stop_sandbox
+        from sbx.process import _job_name, stop_sandbox
 
         project_path = Path(project_path).resolve()
         record = self.store.get(project_path)
@@ -149,7 +149,7 @@ class Engine:
             del self._handles[record.name]
 
         try:
-            deregister_sandbox(record.name)
+            deregister_sandbox(_job_name(record.name))
         except Exception:
             pass
 
@@ -164,6 +164,22 @@ class Engine:
             pids=[],
         )
         log.info("stopped sandbox %s", record.name)
+
+    def session_ended(self, project_path: str | Path) -> None:
+        """Record that the shell of a started sandbox has exited."""
+        from sbx.network import deregister_sandbox
+        from sbx.process import _job_name
+
+        project_path = Path(project_path).resolve()
+        record = self.store.get(project_path)
+        if record is None or record.state != SandboxState.running:
+            return
+        self._handles.pop(record.name, None)
+        try:
+            deregister_sandbox(_job_name(record.name))
+        except Exception as e:
+            log.warning("deregister failed: %s", e)
+        self.store.update(project_path, state=SandboxState.stopped, pids=[])
 
     def destroy(self, project_path: str | Path) -> None:
         project_path = Path(project_path).resolve()

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
+import time
 from pathlib import Path
 
 import click
@@ -12,52 +14,85 @@ from sbx.errors import SandboxError
 log = logging.getLogger(__name__)
 
 
-def _interactive_session(handle) -> None:
-    """Relay stdin/stdout between the terminal and the sandboxed shell."""
+def _pump_output(handle) -> None:
+    """Copy the shell's output to stdout until the runner exits and the
+    pipe is drained, or the pipe breaks."""
+    from sbx import winapi
+
+    while True:
+        try:
+            avail = winapi.peek_pipe(handle.pipe_out)
+        except OSError:
+            return
+        if avail > 0:
+            try:
+                data = winapi.read_file(handle.pipe_out, min(avail, 4096))
+            except OSError:
+                return
+            sys.stdout.buffer.write(data)
+            sys.stdout.buffer.flush()
+        elif handle.runner_exited():
+            return
+        else:
+            time.sleep(0.02)
+
+
+def _pump_piped_input(handle) -> None:
+    """Relay non-console stdin to the shell; signal EOF when it ends."""
+    from sbx import winapi
+
+    stdin = sys.stdin.buffer.raw
+    while True:
+        data = stdin.read(4096)
+        if not data:
+            break
+        try:
+            winapi.write_file(handle.pipe_in, data)
+        except OSError:
+            return
+    handle.close_input()
+
+
+def _pump_console_input(handle) -> None:
+    """Relay console keystrokes to the shell until the runner exits."""
     import msvcrt
-    import threading
 
     from sbx import winapi
 
-    stop = threading.Event()
+    while not handle.runner_exited():
+        if not msvcrt.kbhit():
+            time.sleep(0.02)
+            continue
+        ch = msvcrt.getwch()
+        if ch == "\r":
+            ch = "\r\n"
+        try:
+            winapi.write_file(handle.pipe_in, ch.encode("utf-8"))
+        except OSError:
+            return
 
-    def _read_output():
-        while not stop.is_set():
-            try:
-                avail = winapi.peek_pipe(handle.pipe_out)
-            except OSError:
-                break
-            if avail > 0:
-                try:
-                    data = winapi.read_file(handle.pipe_out, min(avail, 4096))
-                    sys.stdout.buffer.write(data)
-                    sys.stdout.buffer.flush()
-                except OSError:
-                    break
-            else:
-                stop.wait(0.02)
 
-    output_thread = threading.Thread(target=_read_output, daemon=True)
-    output_thread.start()
+def _session(handle) -> int:
+    """Relay I/O between this process and the sandboxed shell until the
+    shell exits. Returns the shell's exit code."""
+    import msvcrt
 
+    from sbx import winapi
+
+    output =threading.Thread(target=_pump_output, args=(handle,), daemon=True)
+    output.start()
     try:
-        while not stop.is_set():
-            if msvcrt.kbhit():
-                ch = msvcrt.getwch()
-                if ch == "\r":
-                    ch = "\r\n"
-                try:
-                    winapi.write_file(handle.pipe_in, ch.encode("utf-8"))
-                except OSError:
-                    break
-            else:
-                stop.wait(0.02)
+        if winapi.is_console(msvcrt.get_osfhandle(sys.stdin.fileno())):
+            _pump_console_input(handle)
+        else:
+            threading.Thread(
+                target=_pump_piped_input, args=(handle,), daemon=True,
+            ).start()
+        code = handle.exit_code()
     except KeyboardInterrupt:
-        pass
-    finally:
-        stop.set()
-        output_thread.join(timeout=2)
-        handle.close()
+        code = 130
+    output.join(timeout=5)
+    return code
 
 
 def _setup_logging(verbose: bool = False, debug: bool = False) -> None:
@@ -113,8 +148,14 @@ def create(ctx: click.Context, config_path: str, name: str | None) -> None:
 @click.argument("project_path", default=".")
 @click.pass_context
 def start(ctx: click.Context, project_path: str) -> None:
-    handle = _engine(ctx).start(project_path)
-    _interactive_session(handle)
+    engine = _engine(ctx)
+    handle = engine.start(project_path)
+    try:
+        code = _session(handle)
+    finally:
+        handle.close()
+        engine.session_ended(project_path)
+    sys.exit(code)
 
 
 @main.command()

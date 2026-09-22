@@ -750,8 +750,13 @@ def shell_execute_elevated(file: str, params: str) -> int:
     return sei.hProcess
 
 
-def wait_for_process(handle: int) -> int:
-    kernel32.WaitForSingleObject(handle, INFINITE)
+WAIT_TIMEOUT = 0x102
+
+
+def wait_for_process(handle: int, timeout_ms: int = INFINITE) -> int | None:
+    """Wait for a process to exit; return its exit code, or None on timeout."""
+    if kernel32.WaitForSingleObject(handle, timeout_ms) == WAIT_TIMEOUT:
+        return None
     exit_code = wintypes.DWORD()
     kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
     return exit_code.value
@@ -1086,6 +1091,29 @@ def create_pipe(inheritable: bool = True) -> tuple[int, int]:
     if not ok:
         raise ctypes.WinError(ctypes.get_last_error())
     return read_h.value, write_h.value
+
+
+HANDLE_FLAG_INHERIT = 0x00000001
+
+kernel32.SetHandleInformation.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+]
+kernel32.SetHandleInformation.restype = wintypes.BOOL
+
+kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+kernel32.GetConsoleMode.restype = wintypes.BOOL
+
+
+def set_handle_inheritable(handle: int, inheritable: bool) -> None:
+    flags = HANDLE_FLAG_INHERIT if inheritable else 0
+    if not kernel32.SetHandleInformation(handle, HANDLE_FLAG_INHERIT, flags):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def is_console(handle: int) -> bool:
+    """True if handle refers to a console (not a pipe, file or NUL)."""
+    mode = wintypes.DWORD()
+    return bool(kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
 
 
 def create_named_pipe(
