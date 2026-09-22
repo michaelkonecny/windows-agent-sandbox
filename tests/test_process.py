@@ -252,6 +252,42 @@ def test_git_bash_under_restricted_token(
         handle.close()
 
 
+@pytest.mark.integration
+def test_default_credentials_path(sandbox_name, sandbox_sid):
+    """Test 70: start_sandbox works with the default credentials path.
+    All other tests pass an explicit credentials_path, sidestepping the
+    path a real user hits via 'sbx install' → 'sbx start'.  This test
+    stores creds at the default path and starts without passing one."""
+    import sys
+    from sbx.elevation import run_elevated
+    from sbx.identity import store_credentials, SANDBOX_USER
+
+    python_dir = str(Path(sys.executable).parent)
+    project_dir = str(Path(__file__).parent.parent)
+
+    try:
+        result = run_elevated("setup_test_env", {
+            "grant_paths": [python_dir, project_dir],
+        })
+    except Exception:
+        pytest.skip("cannot set up test environment (UAC denied)")
+
+    store_credentials(SANDBOX_USER, result["password"])
+
+    handle = start_sandbox(
+        sandbox_name, sandbox_sid, "cmd.exe",
+    )
+    try:
+        _read_output(handle, timeout=5)
+        _send_command(handle, "echo DEFAULT_CREDS_OK")
+        output = _read_output(handle, timeout=5)
+        assert b"DEFAULT_CREDS_OK" in output
+    finally:
+        stop_sandbox(sandbox_name)
+        winapi.wait_for_process(handle.runner_process)
+        handle.close()
+
+
 # Helpers
 
 def _get_job_pids(job: int) -> list[int]:

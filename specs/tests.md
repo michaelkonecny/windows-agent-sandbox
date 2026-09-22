@@ -66,6 +66,7 @@ Windows APIs (not pure logic).
 41. [integration] Shell spawned with `HTTPS_PROXY` env var when network preset is `claude_api_only` or `all`.
 42. [integration] Shell spawned without `HTTPS_PROXY` env var when network preset is `none`.
 69. [integration] Git-bash (Cygwin/MSYS2, the default shell) starts under a restricted token — send a command via pipe, receive output back. Skips if git-bash is not installed.
+70. [integration] `start_sandbox` works with the default credentials path — verifies the flow a real user hits via `sbx install` → `sbx start` (all other tests pass an explicit temp path, sidestepping this).
 
 ## proxy
 

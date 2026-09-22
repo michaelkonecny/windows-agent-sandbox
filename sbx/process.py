@@ -141,6 +141,13 @@ def start_sandbox(
     except OSError as e:
         winapi.close_handle(pipe_in)
         winapi.close_handle(pipe_out)
+        import ctypes
+        code = getattr(e, "winerror", 0) or (ctypes.get_last_error() if hasattr(ctypes, "get_last_error") else 0)
+        if code == 5:
+            raise ProcessError(
+                f"failed to launch runner as {username}: access denied — "
+                f"credentials may be stale, try: python -m sbx install"
+            )
         raise ProcessError(f"failed to launch runner: {e}")
 
     winapi.close_handle(thread_h)
