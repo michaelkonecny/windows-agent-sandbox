@@ -220,3 +220,18 @@ def parent_pids() -> dict[int, int]:
     finally:
         kernel32.CloseHandle(snap)
     return out
+
+
+def profile_paths() -> dict[str, str]:
+    """SID → profile directory, from the registry's ProfileList."""
+    key = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
+    out = {}
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
+        for i in range(winreg.QueryInfoKey(k)[0]):
+            sid = winreg.EnumKey(k, i)
+            with winreg.OpenKey(k, sid) as sk:
+                try:
+                    out[sid] = winreg.QueryValueEx(sk, "ProfileImagePath")[0]
+                except FileNotFoundError:
+                    pass
+    return out

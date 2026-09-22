@@ -126,6 +126,8 @@ def test_79_destroy(installed):
 
 def test_80_uninstall(installed):
     sid = hostwin.account_sid("sbx-user")
+    profiles_before = hostwin.profile_paths()
+    assert sid in profiles_before, "sbx-user never got a profile"
     proxy_pid = None
     pid_file = SBX_HOME / "proxy.pid"
     if pid_file.exists():
@@ -138,6 +140,8 @@ def test_80_uninstall(installed):
     assert hostwin.account_sid("sbx-user") is None, "sbx-user still exists"
     assert not _sbx_rules(sid), "firewall rules scoped to sbx-user remain"
     assert not (SBX_HOME / "credentials.json").exists()
+    assert sid not in hostwin.profile_paths(), "sbx-user profile left behind"
+    assert not Path(profiles_before[sid]).exists(), "sbx-user profile dir left behind"
     if proxy_pid:
         assert wait_until(lambda: not hostwin.process_alive(proxy_pid), 5), "proxy still running"
     assert not pid_file.exists(), "proxy PID file remains"

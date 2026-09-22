@@ -1754,3 +1754,18 @@ kernel32.TerminateProcess.restype = wintypes.BOOL
 def terminate_process(handle: int, exit_code: int = 1) -> None:
     if not kernel32.TerminateProcess(handle, exit_code):
         raise ctypes.WinError(ctypes.get_last_error())
+
+
+userenv = ctypes.WinDLL("userenv", use_last_error=True)
+userenv.DeleteProfileW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR]
+userenv.DeleteProfileW.restype = wintypes.BOOL
+ERROR_FILE_NOT_FOUND = 2
+
+
+def delete_profile(sid: str) -> None:
+    """Delete an account's profile directory and registry entry; no-op if
+    it has none."""
+    if not userenv.DeleteProfileW(sid, None, None):
+        err = ctypes.get_last_error()
+        if err != ERROR_FILE_NOT_FOUND:
+            raise ctypes.WinError(err)

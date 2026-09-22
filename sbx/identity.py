@@ -136,6 +136,9 @@ def unlock_system_dirs(group_sid: str) -> None:
 
 def uninstall_user(credentials_path: Path | None = None) -> None:
     try:
+        if winapi.user_exists(SANDBOX_USER):
+            # NetUserDel leaves the profile; each reinstall would add another.
+            winapi.delete_profile(winapi.account_sid(SANDBOX_USER))
         winapi.delete_user(SANDBOX_USER)
     except OSError as e:
         raise IdentityError(f"failed to delete user {SANDBOX_USER}: {e}")

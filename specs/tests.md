@@ -42,7 +42,7 @@ Rules:
 77. [system] `sbx start` (unprivileged) runs a probe session → shell process owned by `sbx-user`, token not elevated, shell PID in the `sbx-sbxsys-a` Job Object.
 78. [system] Shell starts a long-running background child, then `sbx stop` → every PID from `sbx status` and the child are gone within 5 s; `sbx list` shows `stopped`.
 79. [system] `sbx destroy` → bind links gone, synthetic SID's ACE gone from the project dir, record gone, project files byte-identical to before create.
-80. [system] `sbx uninstall` (session end) → `sbx-user` gone, no firewall rules scoped to it, credentials file gone, proxy not running, no `sbxsys-` bind links left.
+80. [system] `sbx uninstall` (session end) → `sbx-user` gone along with its profile, no firewall rules scoped to it, credentials file gone, proxy not running, no `sbxsys-` bind links left.
 
 ### Filesystem isolation (per shell)
 
