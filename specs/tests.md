@@ -19,7 +19,7 @@ Harness:
 - Fixture projects: `sbxsys-a`, `sbxsys-b` under a temp dir, each with `secret.txt` holding a unique token. Host secret: `~\sbxsys-host-secret.txt`, not mounted anywhere.
 
 Rules:
-- Skip the whole suite unless `SBX_SYSTEM_TESTS=i-understand-this-changes-the-machine` — the value is the acknowledgement; typing it means the runner has read what the suite does. Any other value (incl. `1`) → skip with a message listing the changes below.
+- Skip the whole suite unless `SBX_SYSTEM_TESTS=1` — the value is the acknowledgement; typing it means the runner has read what the suite does. Env var not declared → skip with a message listing the changes below.
 - List the changes in the skip message, a session-start banner, and `tests/system/README.md`: creates/deletes the `sbx-user` account, adds/removes firewall rules, creates bind links, edits ACLs on fixture dirs, uninstalls sbx at session end. Say it's meant for a disposable VM.
 - Wipe leftover sbx state at session start (`sbx uninstall`, delete `%LOCALAPPDATA%\sbx`) — clean baseline instead of refusing.
 - Run fully unattended — no UAC prompt may appear. Mechanism: VM provisioned once with `ConsentPromptBehaviorAdmin=0` (elevate without prompting). `sbx`'s own `runas` elevation then succeeds silently; the admin's split token (admin runs unprivileged until elevated) stays, so `start` still runs unprivileged.
