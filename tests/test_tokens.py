@@ -37,6 +37,8 @@ def test_restricted_sids():
         assert sid_str in restricted
         assert winapi.BUILTIN_USERS_SID in restricted
         assert winapi.EVERYONE_SID in restricted
+        assert winapi.token_logon_sid(token) in restricted
+        assert winapi.token_user_sid(token) in restricted
     finally:
         winapi.close_handle(token)
 
@@ -90,18 +92,20 @@ def test_cannot_read_non_acled_path(tmp_path):
     denied_file = denied_dir / "secret.txt"
     denied_file.write_text("secret")
 
-    user_sid_ptr = _get_current_user_sid()
+    # Administrators passes the normal check (when elevated) but is not in
+    # RestrictedSids — normal access alone must not be enough.
+    admins_ptr = winapi.string_to_sid(winapi.BUILTIN_ADMINS_SID)
     try:
         winapi.set_protected_dacl(
             str(denied_dir),
-            [(user_sid_ptr, winapi.FILE_ALL_ACCESS)],
+            [(admins_ptr, winapi.FILE_ALL_ACCESS)],
         )
         winapi.set_protected_dacl(
             str(denied_file),
-            [(user_sid_ptr, winapi.FILE_ALL_ACCESS)],
+            [(admins_ptr, winapi.FILE_ALL_ACCESS)],
         )
     finally:
-        winapi.kernel32.LocalFree(user_sid_ptr)
+        winapi.kernel32.LocalFree(admins_ptr)
 
     token = create_sandbox_token(sid_str)
     try:

@@ -95,16 +95,15 @@ def create(
             )
         log.info("bind link %s -> %s", target_path, spec.source)
 
-        sid_ptr = winapi.string_to_sid(spec.sandbox_sid)
         try:
-            winapi.grant_sid_access(str(spec.source), sid_ptr)
+            # Sandbox SID: restricted-SID check. Group: normal check.
+            for sid in (spec.sandbox_sid, _group_sid()):
+                _set_access(str(spec.source), sid, grant=True)
         except OSError as e:
             winapi.remove_bind_link(str(target_path))
             raise MountError(
                 f"failed to set ACL on {spec.source}: {e}"
             )
-        finally:
-            winapi.kernel32.LocalFree(sid_ptr)
         log.info("granted SID %s access to %s", spec.sandbox_sid, spec.source)
 
     _save_meta(sandbox_name, specs, meta_root)
@@ -126,15 +125,16 @@ def destroy(
             except OSError as e:
                 log.warning("failed to remove bind link %s: %s", target_path, e)
 
-            sid_ptr = winapi.string_to_sid(entry["sandbox_sid"])
-            try:
-                winapi.remove_sid_access(str(entry["source"]), sid_ptr)
-            except OSError as e:
-                log.warning(
-                    "failed to remove ACL from %s: %s", entry["source"], e
-                )
-            finally:
-                winapi.kernel32.LocalFree(sid_ptr)
+            sids = [entry["sandbox_sid"]]
+            if entry["source"] not in _sources_of_others(sandbox_name, meta_root):
+                sids.append(_group_sid())
+            for sid in sids:
+                try:
+                    _set_access(str(entry["source"]), sid, grant=False)
+                except OSError as e:
+                    log.warning(
+                        "failed to remove ACL from %s: %s", entry["source"], e
+                    )
 
     if ws.exists():
         try:
@@ -145,6 +145,36 @@ def destroy(
     meta = _meta_path(sandbox_name, meta_root)
     if meta.exists():
         meta.unlink()
+
+
+def _group_sid() -> str:
+    from sbx.identity import SANDBOX_GROUP
+    try:
+        return winapi.account_sid(SANDBOX_GROUP)
+    except OSError:
+        raise MountError(f"group {SANDBOX_GROUP} missing — run: sbx install")
+
+
+def _set_access(path: str, sid: str, grant: bool) -> None:
+    sid_ptr = winapi.string_to_sid(sid)
+    try:
+        if grant:
+            winapi.grant_sid_access(path, sid_ptr)
+        else:
+            winapi.remove_sid_access(path, sid_ptr)
+    finally:
+        winapi.kernel32.LocalFree(sid_ptr)
+
+
+def _sources_of_others(
+    sandbox_name: str, meta_root: Path | None = None,
+) -> set[str]:
+    """Mount sources used by every other sandbox — their group ACE stays."""
+    sources: set[str] = set()
+    for meta in _meta_dir(meta_root).glob("*.json"):
+        if meta.stem != sandbox_name:
+            sources |= {e["source"] for e in json.loads(meta.read_text(encoding="utf-8"))}
+    return sources
 
 
 def verify(

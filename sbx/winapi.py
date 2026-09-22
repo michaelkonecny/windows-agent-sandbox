@@ -1608,3 +1608,138 @@ def token_user_sid(token_handle: int) -> str:
     ):
         raise ctypes.WinError(ctypes.get_last_error())
     return sid_to_string(ctypes.c_void_p.from_buffer(buf).value)
+
+
+TokenGroups = 2
+SE_GROUP_LOGON_ID = 0xC0000000
+
+
+def token_logon_sid(token_handle: int) -> str:
+    """S-1-5-5-x-y logon SID of the token's logon session."""
+    size = wintypes.DWORD()
+    advapi32.GetTokenInformation(token_handle, TokenGroups, None, 0, ctypes.byref(size))
+    buf = ctypes.create_string_buffer(size.value)
+    if not advapi32.GetTokenInformation(
+        token_handle, TokenGroups, buf, size, ctypes.byref(size),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    count = ctypes.c_uint32.from_buffer(buf).value
+    groups = (SID_AND_ATTRIBUTES * count).from_buffer(buf, ctypes.sizeof(ctypes.c_void_p))
+    for g in groups:
+        if g.Attributes & SE_GROUP_LOGON_ID == SE_GROUP_LOGON_ID:
+            return sid_to_string(g.Sid)
+    raise OSError("token has no logon SID")
+
+
+# Local groups
+
+class LOCALGROUP_INFO_1(ctypes.Structure):
+    _fields_ = [("lgrpi1_name", wintypes.LPWSTR), ("lgrpi1_comment", wintypes.LPWSTR)]
+
+
+class LOCALGROUP_MEMBERS_INFO_3(ctypes.Structure):
+    _fields_ = [("lgrmi3_domainandname", wintypes.LPWSTR)]
+
+
+netapi32.NetLocalGroupAdd.argtypes = [
+    wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD),
+]
+netapi32.NetLocalGroupAdd.restype = wintypes.DWORD
+netapi32.NetLocalGroupAddMembers.argtypes = [
+    wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+]
+netapi32.NetLocalGroupAddMembers.restype = wintypes.DWORD
+netapi32.NetLocalGroupDel.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+netapi32.NetLocalGroupDel.restype = wintypes.DWORD
+
+ERROR_MEMBER_IN_ALIAS = 1378
+ERROR_ALIAS_EXISTS = 1379
+ERROR_NO_SUCH_ALIAS = 1376
+NERR_GroupExists = 2223
+NERR_GroupNotFound = 2220
+
+
+def create_local_group(name: str, comment: str = "") -> None:
+    """Create a local group; no-op if it exists."""
+    info = LOCALGROUP_INFO_1(name, comment)
+    status = netapi32.NetLocalGroupAdd(None, 1, ctypes.byref(info), None)
+    if status not in (NERR_Success, ERROR_ALIAS_EXISTS, NERR_GroupExists):
+        raise OSError(f"NetLocalGroupAdd failed: status {status}")
+
+
+def add_local_group_member(group: str, member: str) -> None:
+    """Add an account to a local group; no-op if already a member."""
+    info = LOCALGROUP_MEMBERS_INFO_3(member)
+    status = netapi32.NetLocalGroupAddMembers(None, group, 3, ctypes.byref(info), 1)
+    if status not in (NERR_Success, ERROR_MEMBER_IN_ALIAS):
+        raise OSError(f"NetLocalGroupAddMembers failed: status {status}")
+
+
+def delete_local_group(name: str) -> None:
+    status = netapi32.NetLocalGroupDel(None, name)
+    if status not in (NERR_Success, ERROR_NO_SUCH_ALIAS, NERR_GroupNotFound):
+        raise OSError(f"NetLocalGroupDel failed: status {status}")
+
+
+# Non-propagating deny ACEs (a top-level directory only)
+
+DENY_ACCESS = 3
+NO_INHERITANCE = 0
+FILE_ADD_FILE = 0x0002
+FILE_ADD_SUBDIRECTORY = 0x0004
+
+advapi32.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+advapi32.SetFileSecurityW.restype = wintypes.BOOL
+
+
+def _edit_dacl_in_place(path: str, ea: EXPLICIT_ACCESS_W) -> None:
+    """Merge one entry into a file's DACL via SetFileSecurityW, which —
+    unlike SetNamedSecurityInfoW — doesn't walk the subtree."""
+    dacl = ctypes.c_void_p()
+    sd = ctypes.c_void_p()
+    err = advapi32.GetNamedSecurityInfoW(
+        path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        None, None, ctypes.byref(dacl), None, ctypes.byref(sd),
+    )
+    if err != 0:
+        raise OSError(f"GetNamedSecurityInfoW failed: error {err}")
+    new_dacl = ctypes.c_void_p()
+    try:
+        err = advapi32.SetEntriesInAclW(1, ctypes.byref(ea), dacl, ctypes.byref(new_dacl))
+        if err != 0:
+            raise OSError(f"SetEntriesInAclW failed: error {err}")
+        abs_sd = (ctypes.c_byte * 64)()
+        if not advapi32.InitializeSecurityDescriptor(abs_sd, SECURITY_DESCRIPTOR_REVISION):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not advapi32.SetSecurityDescriptorDacl(abs_sd, True, new_dacl, False):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not advapi32.SetFileSecurityW(path, DACL_SECURITY_INFORMATION, abs_sd):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel32.LocalFree(sd)
+        if new_dacl:
+            kernel32.LocalFree(new_dacl)
+
+
+def _explicit_access(sid_ptr: int, mode: int, mask: int) -> EXPLICIT_ACCESS_W:
+    ea = EXPLICIT_ACCESS_W()
+    ea.grfAccessPermissions = mask
+    ea.grfAccessMode = mode
+    ea.grfInheritance = NO_INHERITANCE
+    ea.Trustee.MultipleTrusteeOperation = NO_MULTIPLE_TRUSTEE
+    ea.Trustee.TrusteeForm = TRUSTEE_IS_SID
+    ea.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN
+    ea.Trustee.ptstrName = sid_ptr
+    return ea
+
+
+def deny_create_in_dir(path: str, sid_ptr: int) -> None:
+    """Deny creating files and subdirectories directly in `path`."""
+    _edit_dacl_in_place(path, _explicit_access(
+        sid_ptr, DENY_ACCESS, FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY,
+    ))
+
+
+def remove_dir_aces(path: str, sid_ptr: int) -> None:
+    """Remove every explicit ACE for `sid` from `path` itself."""
+    _edit_dacl_in_place(path, _explicit_access(sid_ptr, REVOKE_ACCESS, 0))

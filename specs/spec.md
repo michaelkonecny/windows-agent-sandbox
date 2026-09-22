@@ -27,7 +27,7 @@ Two layers:
 
 ## Sandbox lifecycle
 
-1. Install (one-time) — engine creates the shared sandbox user account, grants it read+execute on the Python installation and the sbx package (the runner executes them as that account), configures WFP rules. Requires elevation. Uninstall revokes the grants.
+1. Install (one-time) — engine creates the shared sandbox user account and its group `sbx-users`, locks the system-writable directories (see System paths read-only), grants the account read+execute on the Python installation and the sbx package (the runner executes them as that account), configures WFP rules. Requires elevation. Uninstall revokes the grants.
 2. Init — `sbx init` scaffolds a `.sandbox/config.json` with defaults. User edits it.
 3. Create — engine generates a per-sandbox synthetic SID, sets up bind links and ACLs on mount targets, stores sandbox metadata. Requires elevation.
 4. Start — engine re-invokes itself as the sandbox user (via `CreateProcessWithLogonW`), creates a restricted token from that user's token, and launches an interactive shell under it. The user launches agents or other tools from within this shell. Does not require elevation.
@@ -167,17 +167,24 @@ A single shared local user account (`sbx-user`) hosts all sandboxes. Individual 
 
 Each sandbox gets a per-sandbox synthetic SID — unique to that sandbox, ACL'd with read+write on the sandbox's mount targets. Isolates sandbox A from sandbox B's files.
 
-The restricted token's `RestrictedSids` list contains `[per_sandbox_sid, BUILTIN\Users]`. Because the token is fully restricted (not WRITE_RESTRICTED), both reads and writes must pass the restricted SID check. The sandbox process can only access:
-- Its own mounts — via the per-sandbox SID (ACL'd on mount backing paths)
-- System paths — via `BUILTIN\Users` (system paths like `C:\Windows`, `C:\Program Files`, Python/Node/Git directories already grant the Users group read access in their DACLs)
+Every shell, git-bash included, runs under the same restricted token. Its `RestrictedSids` list contains:
+- the per-sandbox SID — gates the sandbox's own mounts
+- `BUILTIN\Users`, `Everyone` — read access to system paths (`C:\Windows`, `C:\Program Files`, Git/Node directories grant Users read); `Everyone` is also needed for process init
+- the runner's logon SID — window station and desktop (`user32` init), and the sandbox's own processes and objects; unique per runner logon, so per sandbox session
+- the `sbx-user` account SID — Cygwin/MSYS2 creates its signal pipe and shared memory with DACLs naming only the account; also the account's profile (HOME, TEMP)
 
-No shared synthetic SID or extra system path ACLs are needed — `BUILTIN\Users` in RestrictedSids is sufficient.
+Because the token is fully restricted (not WRITE_RESTRICTED), both reads and writes must pass the restricted SID check. Because the account SID is in every sandbox's list, nothing sandbox-specific is ever granted to `sbx-user` itself (see Mount setup).
 
 #### Mount setup
 
 - Mount targets appear as bind links inside the sandbox user's home directory, under a per-sandbox subdirectory (`C:\Users\sbx-user\<sandbox-name>\`).
-- Each mount's backing path gets an ACE granting the per-sandbox synthetic SID read+write access.
+- Each mount's backing path gets two read+write ACEs: the per-sandbox synthetic SID (passes the restricted check) and the local group `sbx-users` (passes the normal check). Install creates the group; `sbx-user` is its only member. Another sandbox passes the group check but fails the restricted check.
+- Destroy removes the sandbox SID's ACE, and the group's ACE unless another sandbox still mounts the same source.
 - The engine manages bind links and ACLs during sandbox create/destroy.
+
+#### System paths read-only
+
+`BUILTIN\Users` may create files in `C:\ProgramData`, and INTERACTIVE may in `C:\Users\Public`. Install adds a non-inherited deny ACE (create file, create folder) for `sbx-users` on both; uninstall removes it.
 
 ### Network mechanism
 
@@ -212,7 +219,7 @@ Multiple sandboxes with different network presets run concurrently — the proxy
 Command runner pattern — avoids elevation for start/stop.
 
 1. Engine CLI (unprivileged) calls `CreateProcessWithLogonW` to re-invoke itself as `sbx-user` with an internal `_run` subcommand, passing the sandbox name.
-2. The re-invoked instance (the "runner") is now running as `sbx-user` with a full token. It opens its own process token, calls `CreateRestrictedToken` with `[per_sandbox_sid, BUILTIN\Users]` in `RestrictedSids`, and `DISABLE_MAX_PRIVILEGE`.
+2. The re-invoked instance (the "runner") is now running as `sbx-user` with a full token. It opens its own process token, calls `CreateRestrictedToken` with the `RestrictedSids` listed under Restricted tokens and synthetic SIDs, and `DISABLE_MAX_PRIVILEGE`.
 3. The runner calls `CreateProcessAsUser` with the restricted token to spawn the configured shell. This works without special privileges because the restricted token is derived from the runner's own logon session.
 4. The runner stays alive to relay I/O between the engine CLI and the sandboxed shell, and exits when the shell exits.
 

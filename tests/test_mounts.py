@@ -6,6 +6,14 @@ from sbx.identity import generate_sid
 from sbx.mounts import MountSpec, create, destroy
 
 
+@pytest.fixture(autouse=True)
+def sandbox_group():
+    """Mounts grant the group `sbx install` creates."""
+    from sbx.identity import SANDBOX_GROUP
+    if winapi.is_elevated():
+        winapi.create_local_group(SANDBOX_GROUP)
+
+
 @pytest.mark.elevation
 def test_create_bind_links(tmp_path):
     source = tmp_path / "backing"
@@ -82,20 +90,17 @@ def test_destroy_cleans_acls(tmp_path):
     meta = tmp_path / "meta"
     specs = [MountSpec(source=source, target="code", sandbox_sid=sid_str)]
 
-    create("test-sbx", specs, workspace_root=ws, meta_root=meta)
-    destroy("test-sbx", workspace_root=ws, meta_root=meta)
+    import subprocess
 
-    from sbx.tokens import create_sandbox_token
-    token = create_sandbox_token(sid_str)
-    try:
-        winapi.impersonate_token(token)
-        try:
-            with pytest.raises(PermissionError):
-                (source / "testfile.txt").write_text("should fail")
-        finally:
-            winapi.revert_to_self()
-    finally:
-        winapi.close_handle(token)
+    def acl() -> str:
+        return subprocess.run(
+            ["icacls", str(source)], capture_output=True, text=True, check=True,
+        ).stdout
+
+    create("test-sbx", specs, workspace_root=ws, meta_root=meta)
+    assert sid_str in acl()
+    destroy("test-sbx", workspace_root=ws, meta_root=meta)
+    assert sid_str not in acl()
 
 
 @pytest.mark.elevation

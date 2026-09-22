@@ -106,9 +106,9 @@ Rules:
 
 ## tokens
 
-29. [integration] Created restricted token has `RestrictedSids` containing the per-sandbox SID and `BUILTIN\Users`.
+29. [integration] Created restricted token has `RestrictedSids` containing the per-sandbox SID, `BUILTIN\Users`, `Everyone`, the logon SID and the account SID.
 30. [integration] Process under restricted token can read a path ACL'd for the sandbox SID.
-31. [integration] Process under restricted token cannot read a path not ACL'd for the sandbox SID.
+31. [integration] Process under restricted token cannot read a path not ACL'd for the sandbox SID — the path grants only a group outside RestrictedSids (Administrators), so normal access alone isn't enough.
 32. [integration] `DISABLE_MAX_PRIVILEGE` is set — token has no dangerous privileges.
 
 ## elevation

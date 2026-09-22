@@ -13,6 +13,18 @@ from sbx.errors import IdentityError
 log = logging.getLogger(__name__)
 
 SANDBOX_USER = "sbx-user"
+# Sole member: sbx-user. Mounts grant it for the normal access check —
+# the account SID itself can't be used, because it is in every sandbox's
+# RestrictedSids (see tokens).
+SANDBOX_GROUP = "sbx-users"
+
+
+def system_writable_dirs() -> list[Path]:
+    """System directories Users (or INTERACTIVE) may create files in."""
+    return [
+        Path(os.environ.get("ProgramData", r"C:\ProgramData")),
+        Path(os.environ.get("PUBLIC", r"C:\Users\Public")),
+    ]
 
 
 def _credentials_path() -> Path:
@@ -62,6 +74,9 @@ def install_user(credentials_path: Path | None = None) -> str:
         winapi.set_user_password(SANDBOX_USER, password)
         log.info("user %s already exists, password reset", SANDBOX_USER)
 
+    winapi.create_local_group(SANDBOX_GROUP, "sbx sandbox account")
+    winapi.add_local_group_member(SANDBOX_GROUP, SANDBOX_USER)
+
     store_credentials(SANDBOX_USER, password, credentials_path)
     return SANDBOX_USER
 
@@ -98,11 +113,33 @@ def revoke_runner_access(user_sid: str) -> None:
     _set_runner_access(user_sid, grant=False)
 
 
+def lock_system_dirs(group_sid: str) -> None:
+    """Deny sbx-users creating files directly in system_writable_dirs —
+    system paths are read-only to sandboxes. Idempotent."""
+    sid_ptr = winapi.string_to_sid(group_sid)
+    try:
+        for d in system_writable_dirs():
+            winapi.remove_dir_aces(str(d), sid_ptr)
+            winapi.deny_create_in_dir(str(d), sid_ptr)
+    finally:
+        winapi.kernel32.LocalFree(sid_ptr)
+
+
+def unlock_system_dirs(group_sid: str) -> None:
+    sid_ptr = winapi.string_to_sid(group_sid)
+    try:
+        for d in system_writable_dirs():
+            winapi.remove_dir_aces(str(d), sid_ptr)
+    finally:
+        winapi.kernel32.LocalFree(sid_ptr)
+
+
 def uninstall_user(credentials_path: Path | None = None) -> None:
     try:
         winapi.delete_user(SANDBOX_USER)
     except OSError as e:
         raise IdentityError(f"failed to delete user {SANDBOX_USER}: {e}")
+    winapi.delete_local_group(SANDBOX_GROUP)
 
     creds_path = credentials_path or _credentials_path()
     if creds_path.exists():

@@ -184,7 +184,10 @@ def world(request) -> World:
     _wipe()
 
     home = Path.home()
-    root = Path(tempfile.mkdtemp(prefix="sbxsys-run-"))
+    # Not mkdtemp: its DACL grants OWNER RIGHTS, so files the sandbox
+    # (as sbx-user) creates there would be unreadable to the host.
+    root = Path(tempfile.gettempdir()) / f"sbxsys-run-{uuid.uuid4().hex[:8]}"
+    root.mkdir()
     w = World(
         root=root,
         a=None, b=None,  # type: ignore[arg-type]

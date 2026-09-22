@@ -245,7 +245,7 @@ def test_git_bash_under_restricted_token(
         _read_output(handle, timeout=8)
         _send_command(handle, "echo GIT_BASH_OK")
         output = _read_output(handle, timeout=8)
-        assert b"GIT_BASH_OK" in output
+        assert b"GIT_BASH_OK" in output, output
     finally:
         stop_sandbox(sandbox_name)
         winapi.wait_for_process(handle.runner_process)
