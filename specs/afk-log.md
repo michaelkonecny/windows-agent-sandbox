@@ -13,3 +13,4 @@ Decisions taken while you were away. Branch: `afk/hardening`.
   - `architecture.md` is marked approved but predates today's token/mount/env/DACL changes; spec.md and notes.md are current. Didn't rewrite an approved doc unasked.
 - State: all suites green on `afk/hardening` (system 57 passed / 16 pwsh skips; unit+integration 76 passed / 2 skipped). Not merged into main.
 - Removed unused NULL-DACL helpers from winapi (set_kernel_object_null_dacl, set_token_null_default_dacl) — dead since the explicit-DACL change, and the pattern behind today's bugs. Kept ConPTY helpers (notes list a ConPTY revisit).
+- Nothing safe left to do autonomously; going idle after a final check-in.
