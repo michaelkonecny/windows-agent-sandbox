@@ -4,6 +4,61 @@ Organized by module. Tags: `[elevation]` = needs admin, `[integration]` = needs
 Windows APIs (not pure logic), `[system]` = black-box test of the installed tool
 (see system).
 
+## system
+
+Goal: prove the isolation guarantees in spec.md hold for what a user actually gets from `sbx install` → `sbx create` → `sbx start` — no mocks, no hand-made grants.
+
+Why: integration tests above check modules in isolation or via shortcuts (`run_elevated` mocked in `create`, `setup_test_env` granting `sbx-user` read on the Python dir and repo). Nothing checks the assembled system against the spec's claims.
+
+Harness:
+- Location: `tests/system/`, marker `system`.
+- Probe — a shell command run inside a sandbox that prints one line `PROBE <id> OK` or `PROBE <id> DENIED`. Tests assert on probe lines only, never on free-form shell output.
+- Session — one `sbx start` subprocess with a probe script piped to stdin, ending with `exit` (needs test 73).
+- Probe tools: shell built-ins plus `curl.exe` (ships in `System32`) — nothing that needs the host's Python inside the sandbox.
+- Shells: isolation tests parametrized over `git-bash`, `cmd`, `powershell`, `pwsh`; skip a shell not installed, with its name in the message.
+- Fixture projects: `sbxsys-a`, `sbxsys-b` under a temp dir, each with `secret.txt` holding a unique token. Host secret: `~\sbxsys-host-secret.txt`, not mounted anywhere.
+
+Rules:
+- Skip the whole suite unless `SBX_SYSTEM_TESTS=1` — it creates a real account, firewall rules and bind links on the dev machine.
+- Refuse to run if `%LOCALAPPDATA%\sbx\sandboxes.json` holds any record — the final uninstall would orphan the developer's real sandboxes.
+- Refuse to run elevated; approve UAC prompts by hand — `start` must be proven to work unprivileged. Keep prompts few: one install per session, one create per sandbox.
+- Drive every step through the `sbx` CLI as a subprocess; never import `sbx`, mock, or call `setup_test_env`.
+- Prefix every sandbox name with `sbxsys-` — makes leftovers identifiable.
+- Uninstall in a session-scoped finalizer, even after failures; delete fixture projects and the host secret.
+- Time-limit every session to 60 s; on timeout, `sbx stop` and fail.
+- Verify owner, elevation and process tree from the host side (`sbx status` PIDs + Win32 queries), not from inside the sandbox — `whoami` is unusable under `DISABLE_MAX_PRIVILEGE` (see notes.md).
+
+### Lifecycle
+
+74. [system] `sbx install` from an unprivileged shell → exit 0; `sbx-user` exists, credentials file exists, firewall rules scoped to `sbx-user` exist.
+75. [system] Second `sbx install` → exit 0; same account, no duplicate firewall rules.
+76. [system] `sbx init` + `sbx create` → `C:\Users\sbx-user\sbxsys-a\repo` lists the project's files; `sbx list` shows `sbxsys-a` as `created`.
+77. [system] `sbx start` (unprivileged) runs a probe session → shell process owned by `sbx-user`, token not elevated, shell PID in the `sbx-sbxsys-a` Job Object.
+78. [system] Shell starts a long-running background child, then `sbx stop` → every PID from `sbx status` and the child are gone within 5 s; `sbx list` shows `stopped`.
+79. [system] `sbx destroy` → bind links gone, synthetic SID's ACE gone from the project dir, record gone, project files byte-identical to before create.
+80. [system] `sbx uninstall` (session end) → `sbx-user` gone, no firewall rules scoped to it, credentials file gone, proxy not running, no `sbxsys-` bind links left.
+
+### Filesystem isolation (per shell)
+
+81. [system] Read own mount's `secret.txt` → OK; write `repo\probe.txt` → OK, and the file appears in the host project dir with the written content.
+82. [system] Read `C:\Windows\win.ini` → OK — system paths readable.
+83. [system] Read host secret by its real path → DENIED.
+84. [system] With `sbxsys-a` and `sbxsys-b` both created: from A, read and write under `C:\Users\sbx-user\sbxsys-b\repo` → DENIED; same via B's host backing path → DENIED.
+85. [system] Write to `C:\Windows`, `C:\Program Files`, `C:\ProgramData`, `C:\Users\Public` → DENIED — spec says system paths are read-only.
+86. [system] Single-file mount (`~\sbxsys-cfg.json` → `config/tool.json`) → readable in the sandbox; a sibling file next to the source in the host home → DENIED.
+87. [system] Two sandboxes mounting the same source → both read and write it; destroying one leaves the other's mount working.
+
+### Network isolation (per shell)
+
+88. [system] `none`: `HTTPS_PROXY` unset; direct HTTPS to `example.com` → fails.
+89. [system] `none`: HTTPS to `example.com` explicitly via the proxy port (`curl -x`) → rejected.
+90. [system] `claude-api-only`: `https://api.anthropic.com` via `HTTPS_PROXY` → any HTTP status (connection made); `https://example.com` → rejected.
+91. [system] `claude-api-only`: `curl --noproxy "*" https://api.anthropic.com` → fails — firewall backstop blocks direct egress.
+92. [system] `all`: `https://example.com` via `HTTPS_PROXY` → any HTTP status.
+93. [system] `sbxsys-a` (`none`) and `sbxsys-b` (`claude-api-only`) running at once → A blocked from `api.anthropic.com`, B allowed.
+94. [system] Kill the proxy while B (`claude-api-only`) runs → B's requests fail; no fallback to direct egress.
+95. [system] Host process reaches `https://example.com` while sandboxes run and after uninstall — firewall rules hit only `sbx-user`.
+
 ## config
 
 1. `scaffold_config` creates `.sandbox/config.json` with valid default content (parseable by `load_config`).
@@ -110,65 +165,3 @@ Windows APIs (not pure logic), `[system]` = black-box test of the installed tool
 67. Engine error → non-zero exit code and human-readable message on stderr.
 73. [integration] `sbx start` with piped (non-console) stdin — relays stdin to the shell, returns when the shell exits (after `exit` or stdin EOF), exit code = shell's exit code. Prerequisite for system tests.
 
-## system
-
-Goal: prove the isolation guarantees in spec.md hold for what a user actually gets from `sbx install` → `sbx create` → `sbx start` — no mocks, no hand-made grants.
-
-Why: integration tests above check modules in isolation or via shortcuts (`run_elevated` mocked in `create`, `setup_test_env` granting `sbx-user` read on the Python dir and repo). Nothing checks the assembled system against the spec's claims.
-
-Harness:
-- Location: `tests/system/`, marker `system`.
-- Probe — a shell command run inside a sandbox that prints one line `PROBE <id> OK` or `PROBE <id> DENIED`. Tests assert on probe lines only, never on free-form shell output.
-- Session — one `sbx start` subprocess with a probe script piped to stdin, ending with `exit` (needs test 73).
-- Probe tools: shell built-ins plus `curl.exe` (ships in `System32`) — nothing that needs the host's Python inside the sandbox.
-- Shells: isolation tests parametrized over `git-bash`, `cmd`, `powershell`, `pwsh`; skip a shell not installed, with its name in the message.
-- Fixture projects: `sbxsys-a`, `sbxsys-b` under a temp dir, each with `secret.txt` holding a unique token. Host secret: `~\sbxsys-host-secret.txt`, not mounted anywhere.
-
-Rules:
-- Skip the whole suite unless `SBX_SYSTEM_TESTS=1` — it creates a real account, firewall rules and bind links on the dev machine.
-- Refuse to run if `%LOCALAPPDATA%\sbx\sandboxes.json` holds any record — the final uninstall would orphan the developer's real sandboxes.
-- Refuse to run elevated; approve UAC prompts by hand — `start` must be proven to work unprivileged. Keep prompts few: one install per session, one create per sandbox.
-- Drive every step through the `sbx` CLI as a subprocess; never import `sbx`, mock, or call `setup_test_env`.
-- Prefix every sandbox name with `sbxsys-` — makes leftovers identifiable.
-- Uninstall in a session-scoped finalizer, even after failures; delete fixture projects and the host secret.
-- Time-limit every session to 60 s; on timeout, `sbx stop` and fail.
-- Verify owner, elevation and process tree from the host side (`sbx status` PIDs + Win32 queries), not from inside the sandbox — `whoami` is unusable under `DISABLE_MAX_PRIVILEGE` (see notes.md).
-
-### Lifecycle
-
-74. [system] `sbx install` from an unprivileged shell → exit 0; `sbx-user` exists, credentials file exists, firewall rules scoped to `sbx-user` exist.
-75. [system] Second `sbx install` → exit 0; same account, no duplicate firewall rules.
-76. [system] `sbx init` + `sbx create` → `C:\Users\sbx-user\sbxsys-a\repo` lists the project's files; `sbx list` shows `sbxsys-a` as `created`.
-77. [system] `sbx start` (unprivileged) runs a probe session → shell process owned by `sbx-user`, token not elevated, shell PID in the `sbx-sbxsys-a` Job Object.
-78. [system] Shell starts a long-running background child, then `sbx stop` → every PID from `sbx status` and the child are gone within 5 s; `sbx list` shows `stopped`.
-79. [system] `sbx destroy` → bind links gone, synthetic SID's ACE gone from the project dir, record gone, project files byte-identical to before create.
-80. [system] `sbx uninstall` (session end) → `sbx-user` gone, no firewall rules scoped to it, credentials file gone, proxy not running, no `sbxsys-` bind links left.
-
-### Filesystem isolation (per shell)
-
-81. [system] Read own mount's `secret.txt` → OK; write `repo\probe.txt` → OK, and the file appears in the host project dir with the written content.
-82. [system] Read `C:\Windows\win.ini` → OK — system paths readable.
-83. [system] Read host secret by its real path → DENIED.
-84. [system] With `sbxsys-a` and `sbxsys-b` both created: from A, read and write under `C:\Users\sbx-user\sbxsys-b\repo` → DENIED; same via B's host backing path → DENIED.
-85. [system] Write to `C:\Windows`, `C:\Program Files`, `C:\ProgramData`, `C:\Users\Public` → DENIED — spec says system paths are read-only.
-86. [system] Single-file mount (`~\sbxsys-cfg.json` → `config/tool.json`) → readable in the sandbox; a sibling file next to the source in the host home → DENIED.
-87. [system] Two sandboxes mounting the same source → both read and write it; destroying one leaves the other's mount working.
-
-### Network isolation (per shell)
-
-88. [system] `none`: `HTTPS_PROXY` unset; direct HTTPS to `example.com` → fails.
-89. [system] `none`: HTTPS to `example.com` explicitly via the proxy port (`curl -x`) → rejected.
-90. [system] `claude-api-only`: `https://api.anthropic.com` via `HTTPS_PROXY` → any HTTP status (connection made); `https://example.com` → rejected.
-91. [system] `claude-api-only`: `curl --noproxy "*" https://api.anthropic.com` → fails — firewall backstop blocks direct egress.
-92. [system] `all`: `https://example.com` via `HTTPS_PROXY` → any HTTP status.
-93. [system] `sbxsys-a` (`none`) and `sbxsys-b` (`claude-api-only`) running at once → A blocked from `api.anthropic.com`, B allowed.
-94. [system] Kill the proxy while B (`claude-api-only`) runs → B's requests fail; no fallback to direct egress.
-95. [system] Host process reaches `https://example.com` while sandboxes run and after uninstall — firewall rules hit only `sbx-user`.
-
-### Expected to fail today
-
-Inferred from code reading, not run:
-- 77 and every session test — `install` grants `sbx-user` nothing on the host Python (`%LOCALAPPDATA%\Python\...`) or the `sbx` package, so the runner likely can't start. High confidence.
-- 74, 88, 91, 94 — nothing in production code calls `install_wfp_rules`; the firewall backstop never gets installed. High confidence.
-- 81–87 under `git-bash` — no restricted SIDs for Cygwin shells (notes.md), so the synthetic SID never enters access checks: either no mount access, or siblings readable via `sbx-user`. Medium confidence on which.
-- 85 for `C:\ProgramData`, `C:\Users\Public` — `BUILTIN\Users` in `RestrictedSids` passes where the Users group has write. Medium confidence.
