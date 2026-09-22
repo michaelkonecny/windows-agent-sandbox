@@ -50,7 +50,7 @@ Rules:
 82. [system] Read `C:\Windows\win.ini` → OK — system paths readable.
 83. [system] Read host secret by its real path → DENIED.
 84. [system] With `sbxsys-a` and `sbxsys-b` both created: from A, read and write under `C:\Users\sbx-user\sbxsys-b\repo` → DENIED; same via B's host backing path → DENIED.
-85. [system] Write to `C:\Windows`, `C:\Program Files`, `C:\ProgramData`, `C:\Users\Public` → DENIED — spec says system paths are read-only.
+85. [system] Write to `C:\Windows`, `C:\Windows\Temp`, `C:\Program Files`, `C:\ProgramData`, `C:\Users\Public` → DENIED — spec says system paths are read-only.
 86. [system] Single-file mount (`~\sbxsys-cfg.json` → `config/tool.json`) → readable in the sandbox; a sibling file next to the source in the host home → DENIED.
 87. [system] Two sandboxes mounting the same source → both read and write it; destroying one leaves the other's mount working.
 
