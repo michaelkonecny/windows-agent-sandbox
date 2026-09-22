@@ -19,9 +19,11 @@ Harness:
 - Fixture projects: `sbxsys-a`, `sbxsys-b` under a temp dir, each with `secret.txt` holding a unique token. Host secret: `~\sbxsys-host-secret.txt`, not mounted anywhere.
 
 Rules:
-- Skip the whole suite unless `SBX_SYSTEM_TESTS=1` — it creates a real account, firewall rules and bind links on the dev machine.
-- Refuse to run if `%LOCALAPPDATA%\sbx\sandboxes.json` holds any record — the final uninstall would orphan the developer's real sandboxes.
-- Refuse to run elevated; approve UAC prompts by hand — `start` must be proven to work unprivileged. Keep prompts few: one install per session, one create per sandbox.
+- Skip the whole suite unless `SBX_SYSTEM_TESTS=i-understand-this-changes-the-machine` — the value is the acknowledgement; typing it means the runner has read what the suite does. Any other value (incl. `1`) → skip with a message listing the changes below.
+- List the changes in the skip message, a session-start banner, and `tests/system/README.md`: creates/deletes the `sbx-user` account, adds/removes firewall rules, creates bind links, edits ACLs on fixture dirs, uninstalls sbx at session end. Say it's meant for a disposable VM.
+- Wipe leftover sbx state at session start (`sbx uninstall`, delete `%LOCALAPPDATA%\sbx`) — clean baseline instead of refusing.
+- Refuse to run elevated — `start` must be proven to work unprivileged. Approve UAC prompts by hand, or once per VM set `ConsentPromptBehaviorAdmin=0` (elevate without prompting; keeps the split token, so the unprivileged check still holds). Document this in the README; never change it from the suite.
+- Keep UAC prompts few: one install per session, one create per sandbox.
 - Drive every step through the `sbx` CLI as a subprocess; never import `sbx`, mock, or call `setup_test_env`.
 - Prefix every sandbox name with `sbxsys-` — makes leftovers identifiable.
 - Uninstall in a session-scoped finalizer, even after failures; delete fixture projects and the host secret.
