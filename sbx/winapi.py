@@ -1494,39 +1494,6 @@ advapi32.SetKernelObjectSecurity.argtypes = [
 advapi32.SetKernelObjectSecurity.restype = wintypes.BOOL
 
 
-def set_token_null_default_dacl(token_handle: int) -> None:
-    """Set the token's default DACL to NULL so objects created by the
-    process are accessible to it.  Cygwin-based shells (git-bash) create
-    named pipes for signal handling during init; without this the
-    restricted SIDs aren't in the default DACL and creation fails."""
-    dacl_ptr = ctypes.c_void_p(0)
-    ok = advapi32.SetTokenInformation(
-        token_handle, TokenDefaultDacl,
-        ctypes.byref(dacl_ptr), ctypes.sizeof(dacl_ptr),
-    )
-    if not ok:
-        raise ctypes.WinError(ctypes.get_last_error())
-
-
-def set_kernel_object_null_dacl(handle: int) -> None:
-    """Set a NULL DACL on a kernel object (e.g. a token handle) so the
-    process running under restricted SIDs can query it.  Cygwin calls
-    NtQueryInformationToken on its own process token during init;
-    without this the restricted token's object DACL blocks the query."""
-    sd = (ctypes.c_byte * 64)()
-    ok = advapi32.InitializeSecurityDescriptor(sd, SECURITY_DESCRIPTOR_REVISION)
-    if not ok:
-        raise ctypes.WinError(ctypes.get_last_error())
-    ok = advapi32.SetSecurityDescriptorDacl(sd, True, None, False)
-    if not ok:
-        raise ctypes.WinError(ctypes.get_last_error())
-    ok = advapi32.SetKernelObjectSecurity(
-        handle, DACL_SECURITY_INFORMATION, sd,
-    )
-    if not ok:
-        raise ctypes.WinError(ctypes.get_last_error())
-
-
 # Explicit security descriptors (SDDL)
 
 advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
