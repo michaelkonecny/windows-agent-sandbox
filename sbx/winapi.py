@@ -762,6 +762,13 @@ def close_handle(handle: int) -> None:
         kernel32.CloseHandle(handle)
 
 
+def resume_thread(handle: int) -> int:
+    prev = kernel32.ResumeThread(handle)
+    if prev == 0xFFFFFFFF:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return prev
+
+
 # ── Phase 4: Process launch ────────────────────────────────
 
 # Constants

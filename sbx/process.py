@@ -291,6 +291,7 @@ def _execute_runner_inner(
     try:
         proc_h, thread_h, shell_pid, _ = winapi.create_process_as_user(
             token, shell_path,
+            creation_flags=winapi.CREATE_SUSPENDED,
             std_handles=(stdin_read, stdout_write, stdout_write),
         )
     except OSError as e:
@@ -305,11 +306,13 @@ def _execute_runner_inner(
         winapi.close_handle(pipe_out)
         raise ProcessError(f"failed to launch shell: {e}")
 
-    _log(f"shell launched, pid={shell_pid}")
+    _log(f"shell launched suspended, pid={shell_pid}")
     winapi.close_handle(stdin_read)
     winapi.close_handle(stdout_write)
 
     winapi.assign_process_to_job(job, proc_h)
+    _log("process assigned to job, resuming")
+    winapi.resume_thread(thread_h)
     winapi.close_handle(thread_h)
 
     stop = threading.Event()
