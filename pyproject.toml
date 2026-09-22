@@ -16,4 +16,5 @@ testpaths = ["tests"]
 markers = [
     "elevation: needs admin privileges",
     "integration: needs Windows APIs or system changes",
+    "system: black-box test of the installed tool (tests/system, opt-in via SBX_SYSTEM_TESTS=1)",
 ]
