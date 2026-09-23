@@ -258,9 +258,9 @@ def start(ctx: click.Context, sandbox: str) -> None:
         code = _session(handle, console)
     finally:
         handle.close()
-        if console is not None:
-            for h in console:
-                winapi.close_handle(h)
+        # Console handles are left to process exit: the input thread may be
+        # parked in ReadConsoleInput on CONIN$, and closing it would wait
+        # for that read — forever.
         engine.session_ended(sandbox)
     sys.exit(code)
 

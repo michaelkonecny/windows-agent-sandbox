@@ -431,6 +431,9 @@ def _execute_runner_inner(
     )
     from sbx.mounts import SANDBOX_USER_HOME
     workspace = SANDBOX_USER_HOME / sandbox_name
+    # Children inherit "ignore Ctrl+C"; clear it so Ctrl+C typed in the
+    # sandbox reaches the shell and what it runs.
+    winapi.kernel32.SetConsoleCtrlHandler(None, False)
     attr_buf, attr_list = winapi.init_proc_attribute_list(1)
     winapi.update_proc_attribute_console(attr_list, hpc)
     try:
