@@ -57,7 +57,7 @@ def test_76_init_create(installed):
     assert res.returncode == 0, res.stderr
     installed.notes["a_before"] = _snapshot(a.path)
 
-    res = sbx("create", str(a.config))
+    res = sbx("create", str(a.path))
     assert res.returncode == 0, res.stderr
 
     listing = {p.name for p in (WORKSPACE / a.name / "repo").iterdir()}

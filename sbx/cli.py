@@ -230,11 +230,15 @@ def init(ctx: click.Context, project_path: str) -> None:
 
 
 @main.command()
-@click.argument("config_path")
+@click.argument("project_path", default=".")
+@click.option("--config", "config_path", default=None,
+              help="Config file (default: <project>/.sandbox/config.json).")
 @click.option("--name", "-n", default=None, help="Sandbox name.")
 @click.pass_context
-def create(ctx: click.Context, config_path: str, name: str | None) -> None:
-    record = _engine(ctx).create(config_path, name)
+def create(
+    ctx: click.Context, project_path: str, config_path: str | None, name: str | None,
+) -> None:
+    record = _engine(ctx).create(project_path, config_path, name)
     click.echo(f"sandbox created: {record.name} (SID {record.synthetic_sid})")
 
 

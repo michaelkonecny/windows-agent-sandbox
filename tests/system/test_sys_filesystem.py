@@ -94,7 +94,7 @@ def test_87_shared_source(installed, shell):
             {"source": ".", "target": "repo"},
             {"source": str(w.shared), "target": "shared"},
         ], shell.name, "none")
-        sbx("create", str(p.config), check=True)
+        sbx("create", str(p.path), check=True)
     tag = f"{shell.name}-{uuid.uuid4().hex[:6]}"
     try:
         res = run_session(c.path, shell, [

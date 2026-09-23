@@ -223,7 +223,7 @@ def _recreate(project: Project, mounts: list[dict], network: str) -> None:
     if project.name in sbx_list():
         sbx("destroy", str(project.path), check=True)
     write_config(project.path, mounts, "cmd", network)
-    sbx("create", str(project.config), check=True)
+    sbx("create", str(project.path), check=True)
 
 
 @pytest.fixture(scope="session")

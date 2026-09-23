@@ -214,7 +214,9 @@ class Engine:
     def uninstall() -> None
     def init(project_path: Path) -> Path
         """Scaffold .sandbox/config.json. Returns the created path."""
-    def create(config_path: Path, name: str | None = None) -> CreateResult
+    def create(project_path: Path = ".", config_path: Path | None = None,
+               name: str | None = None) -> CreateResult
+        """config_path defaults to <project_path>/.sandbox/config.json."""
     def destroy(sandbox: str) -> None          # name or project path
     def start(sandbox: str) -> StartHandle     # name or project path
     def stop(sandbox: str) -> None             # name or project path
@@ -241,7 +243,8 @@ class SandboxConfig:
     shell: ShellKind           # enum: git_bash, cmd, powershell, pwsh
     network: NetworkPreset     # enum: none, claude_api_only, all
 
-def load_config(config_path: Path) -> SandboxConfig
+def load_config(config_path: Path, project_root: Path | None = None) -> SandboxConfig
+    """`.` in mounts resolves to project_root (default: the config's grandparent)."""
 
 def scaffold_config(project_path: Path) -> Path
     """Write .sandbox/config.json with defaults. Raises ConfigError if it already exists.

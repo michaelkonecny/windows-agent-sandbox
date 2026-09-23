@@ -36,7 +36,7 @@ def test_100_journey(installed, console):
     try:
         c.line(f"{SBX_TYPED} init {project.path}")
         c.expect("config created")
-        c.line(f"{SBX_TYPED} create {project.config}")
+        c.line(f"{SBX_TYPED} create {project.path}")
         c.expect("sandbox created", 120)
         enter_sandbox(c, project.path, default_shell)
         c.line(default_shell.calc(6, 7))

@@ -185,7 +185,8 @@ Harness:
 
 57. [elevation, integration] Full lifecycle: install → init → create → start → stop → destroy → uninstall — each step transitions state correctly.
 58. Init scaffolds config in target directory, create reads it back successfully.
-59. Create with an invalid config path — fails before touching system state.
+109. `create` addressing — `sbx create <folder>` reads `<folder>\.sandbox\config.json`, and no argument means the current folder; `--config <file>` overrides the file while `.` in mounts still means the folder; a file passed as the folder → one-line `error:` naming `--config`, exit 1.
+59. Create with a missing config file — fails before touching system state.
 60. Create with a duplicate sandbox name — rejected.
 61. Start when configured shell is missing — refused with a message naming the shell.
 62. Destroy a running sandbox — stops it first, then destroys.

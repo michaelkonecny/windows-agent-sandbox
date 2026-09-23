@@ -63,7 +63,7 @@ def test_init_and_create(engine, tmp_project):
     assert config_file.exists()
 
     with mock.patch("sbx.engine.run_elevated", return_value={"created": True}):
-        record = engine.create(config_file)
+        record = engine.create(config_file.parent.parent)
 
     assert record.name == tmp_project.name
     assert record.state == SandboxState.created
@@ -73,13 +73,13 @@ def test_init_and_create(engine, tmp_project):
 def test_create_invalid_config(engine, tmp_path):
     """Test 59: Create with invalid config path fails before touching state."""
     with pytest.raises(SandboxError, match="config not found"):
-        engine.create(tmp_path / "nonexistent" / "config.json")
+        engine.create(tmp_path)  # a folder with no .sandbox/config.json
 
 
 def test_create_duplicate_name(engine, config_path, tmp_path):
     """Test 60: Create with duplicate sandbox name is rejected."""
     with mock.patch("sbx.engine.run_elevated", return_value={"created": True}):
-        engine.create(config_path, name="dupe")
+        engine.create(config_path.parent.parent, name="dupe")
 
     config2_dir = tmp_path / "proj2" / ".sandbox"
     config2_dir.mkdir(parents=True)
@@ -93,7 +93,7 @@ def test_create_duplicate_name(engine, config_path, tmp_path):
 
     with mock.patch("sbx.engine.run_elevated", return_value={"created": True}):
         with pytest.raises(SandboxError, match="already exists"):
-            engine.create(config2, name="dupe")
+            engine.create(config2.parent.parent, name="dupe")
 
 
 def test_start_missing_shell(engine, config_path, tmp_project):
@@ -105,7 +105,7 @@ def test_start_missing_shell(engine, config_path, tmp_project):
     }))
 
     with mock.patch("sbx.engine.run_elevated", return_value={"created": True}):
-        engine.create(config_path)
+        engine.create(config_path.parent.parent)
 
     with mock.patch("sbx.process.resolve_shell", side_effect=SandboxError("shell not found: pwsh")):
         with pytest.raises(SandboxError, match="shell not found"):
@@ -115,7 +115,7 @@ def test_start_missing_shell(engine, config_path, tmp_project):
 def test_destroy_running_sandbox(engine, config_path, tmp_project):
     """Test 62: Destroy a running sandbox stops it first."""
     with mock.patch("sbx.engine.run_elevated", return_value={"created": True}):
-        engine.create(config_path)
+        engine.create(config_path.parent.parent)
 
     engine.store.update(tmp_project, state=SandboxState.running, pids=[9999])
 
@@ -130,7 +130,7 @@ def test_destroy_running_sandbox(engine, config_path, tmp_project):
 def test_list_sandboxes(engine, config_path, tmp_project, tmp_path):
     """Test 63: List returns all sandboxes with correct states."""
     with mock.patch("sbx.engine.run_elevated", return_value={"created": True}):
-        engine.create(config_path, name="sb1")
+        engine.create(config_path.parent.parent, name="sb1")
 
     records = engine.list()
     assert len(records) == 1
@@ -141,7 +141,7 @@ def test_list_sandboxes(engine, config_path, tmp_project, tmp_path):
 def test_status_running(engine, config_path, tmp_project):
     """Test 64: Status on a running sandbox includes live PIDs."""
     with mock.patch("sbx.engine.run_elevated", return_value={"created": True}):
-        engine.create(config_path)
+        engine.create(config_path.parent.parent)
 
     engine.store.update(tmp_project, state=SandboxState.running, pids=[1234, 5678])
 
@@ -196,7 +196,7 @@ def test_interactive_shell(tmp_path):
     }))
 
     with mock.patch("sbx.engine.run_elevated", return_value={"created": True}):
-        engine.create(config_file, name="itest")
+        engine.create(config_file.parent.parent, name="itest")
 
     handle = engine.start(project)
     try:
@@ -229,7 +229,7 @@ def test_interactive_shell(tmp_path):
 def test_resolve_by_name_project_or_config(engine, config_path, tmp_project):
     """[name] accepts the sandbox name, the project path, or its config path."""
     with mock.patch("sbx.engine.run_elevated", return_value={"created": True}):
-        engine.create(config_path, name="alias")
+        engine.create(config_path.parent.parent, name="alias")
     for ref in ("alias", str(tmp_project), str(config_path)):
         assert engine.status(ref)["name"] == "alias", ref
 
@@ -237,3 +237,44 @@ def test_resolve_by_name_project_or_config(engine, config_path, tmp_project):
 def test_resolve_unknown(engine):
     with pytest.raises(SandboxError, match="no sandbox"):
         engine.status("nope-not-a-sandbox")
+
+
+def _created_specs(elevated) -> list[dict]:
+    """The mount specs `create` sent to the elevated helper."""
+    return elevated.call_args.args[1]["specs"]
+
+
+def test_create_takes_project_folder(engine, config_path, tmp_project):
+    """Test 109: `create <folder>` reads <folder>/.sandbox/config.json."""
+    with mock.patch("sbx.engine.run_elevated", return_value={}) as elevated:
+        record = engine.create(tmp_project)
+    assert record.project_path == tmp_project
+    assert record.config_path == config_path
+    assert _created_specs(elevated)[0]["source"] == str(tmp_project)
+
+
+def test_create_defaults_to_current_folder(engine, config_path, tmp_project, monkeypatch):
+    """Test 109: no argument means the current folder."""
+    monkeypatch.chdir(tmp_project)
+    with mock.patch("sbx.engine.run_elevated", return_value={}):
+        assert engine.create().project_path == tmp_project
+
+
+def test_create_config_override_keeps_project_root(engine, tmp_project, tmp_path):
+    """Test 109: --config overrides the file; `.` still means the project folder."""
+    other = tmp_path / "elsewhere" / "cfg.json"
+    other.parent.mkdir()
+    other.write_text(json.dumps({
+        "mounts": [{"source": ".", "target": "repo"}], "shell": "cmd",
+    }))
+    with mock.patch("sbx.engine.run_elevated", return_value={}) as elevated:
+        record = engine.create(tmp_project, config_path=other)
+    assert record.project_path == tmp_project
+    assert record.config_path == other.resolve()
+    assert _created_specs(elevated)[0]["source"] == str(tmp_project)
+
+
+def test_create_rejects_a_file_as_project(engine, config_path):
+    """Test 109: a file where the folder goes points the user to --config."""
+    with pytest.raises(SandboxError, match="--config"):
+        engine.create(config_path)

@@ -98,7 +98,7 @@ def test_e2e_cli_lifecycle(tmp_path):
 
         # create (mock elevation for mount operations)
         with mock.patch("sbx.engine.run_elevated", return_value={"created": True}):
-            res = runner.invoke(main, ["create", str(config_file)])
+            res = runner.invoke(main, ["create", str(project)])
         assert res.exit_code == 0, res.output
 
         # start via engine API (CLI start blocks in _interactive_session)
@@ -181,7 +181,7 @@ def piped_sandbox(tmp_path):
     name = f"piped-{os.getpid()}"
     engine = Engine(store=Store(appdata / "sbx" / "sandboxes.json"))
     with mock.patch("sbx.engine.run_elevated", return_value={"created": True}):
-        engine.create(config_file, name=name)
+        engine.create(project, name=name)
 
     env = dict(os.environ, LOCALAPPDATA=str(appdata), PYTHONPATH=project_dir)
     yield project, env
@@ -243,3 +243,13 @@ def test_start_reports_runner_failure(runner):
     assert "Traceback" not in result.output
     assert result.output.strip().startswith("error:")
     assert "sbx-runner.log" in result.output
+
+
+def test_create_file_argument_is_one_line_error(runner, tmp_path):
+    """Test 109: `sbx create <file>` → one-line error naming --config."""
+    f = tmp_path / "config.json"
+    f.write_text("{}")
+    result = runner.invoke(main, ["create", str(f)])
+    assert result.exit_code == 1
+    assert result.output.strip().startswith("error:")
+    assert "--config" in result.output

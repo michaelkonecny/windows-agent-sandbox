@@ -56,7 +56,7 @@ Project-local JSON config file (`.sandbox/config.json` in the project root). Dev
 ```
 
 Mount semantics:
-- `source` — absolute path on the host (or `.` for project root, `~` for host user's home).
+- `source` — absolute path on the host (or `.` for project root, `~` for host user's home). The project root is the folder given to `sbx create` — also when `--config` points elsewhere.
 - `target` — relative path under the sandbox workspace. `"repo"` resolves to `C:\Users\<sandbox-user>\<sandbox-name>\repo`.
 - Supports both folders and individual files.
 - Target names must be unique within a config. Duplicate targets are rejected at parse time.
@@ -108,7 +108,9 @@ See Network mechanism for implementation details.
 ```
 sbx install                 # one-time setup (elevated)
 sbx init                    # scaffolds .sandbox/config.json in current directory
-sbx create [--name alias]   # sets up sandbox from .sandbox/config.json (elevated)
+sbx create [path] [--config file] [--name alias]
+                            # sets up the sandbox for project folder [path] (default: current dir)
+                            # from <path>\.sandbox\config.json, or from --config (elevated)
 sbx start [name]            # opens interactive shell inside sandbox
 sbx stop [name]             # terminates sandbox processes
 sbx destroy [name]          # tears down sandbox (elevated)
@@ -119,7 +121,9 @@ sbx uninstall               # removes all sandbox infrastructure (elevated)
 
 `sbx start` with non-console stdin (pipe or file) relays it to the shell and exits with the shell's exit code — makes the sandbox scriptable and system-testable. Line endings become Enter (CR). When stdin runs out, sbx types `exit` at the shell — a console has no end-of-input.
 
-`[name]` — optional sandbox name (alias), project path, or the project's `.sandbox\config.json` path. Defaults to the current directory. An unknown name or path is reported as a one-line error with a non-zero exit code — never a Python traceback. So is a sandbox that fails to start after the runner launched (e.g. the shell can't be created): `sbx start` names the runner log, `C:\Users\Public\sbx-runner.log`, instead of returning silently.
+`sbx create` takes a project folder. Passing a file there is a one-line error that points to `--config`.
+
+`[name]` — optional sandbox name (alias), project path, or the sandbox's config file path. Defaults to the current directory. An unknown name or path is reported as a one-line error with a non-zero exit code — never a Python traceback. So is a sandbox that fails to start after the runner launched (e.g. the shell can't be created): `sbx start` names the runner log, `C:\Users\Public\sbx-runner.log`, instead of returning silently.
 
 #### Terminal
 

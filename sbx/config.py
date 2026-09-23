@@ -63,9 +63,11 @@ def scaffold_config(project_path: Path) -> Path:
     return config_file
 
 
-def load_config(config_path: Path) -> SandboxConfig:
+def load_config(config_path: Path, project_root: Path | None = None) -> SandboxConfig:
+    """`.` in mount sources resolves to project_root — by default the
+    config's grandparent (<project>/.sandbox/config.json)."""
     config_path = Path(config_path).resolve()
-    project_root = config_path.parent.parent
+    project_root = Path(project_root).resolve() if project_root else config_path.parent.parent
 
     try:
         raw = config_path.read_text(encoding="utf-8")

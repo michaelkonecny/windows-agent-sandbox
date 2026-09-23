@@ -49,15 +49,27 @@ class Engine:
 
     def create(
         self,
-        config_path: str | Path,
+        project_path: str | Path = ".",
+        config_path: str | Path | None = None,
         name: str | None = None,
     ) -> SandboxRecord:
-        config_path = Path(config_path).resolve()
+        """Set up the sandbox for a project folder. The config defaults to
+        <project>/.sandbox/config.json; `.` in its mounts is the folder."""
+        project_path = Path(project_path).resolve()
+        if project_path.is_file():
+            raise SandboxError(
+                f"{project_path} is a file — pass the project folder, "
+                f"or the config file with --config"
+            )
+        if not project_path.is_dir():
+            raise SandboxError(f"project folder not found: {project_path}")
+        config_path = Path(
+            config_path or project_path / CONFIG_DIR / CONFIG_FILE
+        ).resolve()
         if not config_path.exists():
             raise SandboxError(f"config not found: {config_path}")
 
-        cfg = load_config(config_path)
-        project_path = config_path.parent.parent
+        cfg = load_config(config_path, project_root=project_path)
 
         if name is None:
             name = project_path.name
@@ -104,7 +116,7 @@ class Engine:
         record = self._resolve(sandbox)
         project_path = record.project_path
 
-        cfg = load_config(record.config_path)
+        cfg = load_config(record.config_path, project_root=record.project_path)
         shell_path = resolve_shell(cfg.shell)
 
         proxy_port = None
