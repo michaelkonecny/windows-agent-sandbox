@@ -22,12 +22,13 @@ def test_98_host_env_not_inherited(pair, shell):
 
 
 def test_99_runner_dacls_exclude_sandbox(pair):
-    """The runner holds an unrestricted sbx-user token, so neither its
-    process nor its token may grant sbx-user (which every sandbox's
-    RestrictedSids contain). Checked host-side by reading the DACLs."""
+    """The runner and its pseudo-console host hold unrestricted sbx-user
+    tokens, so neither their processes nor their tokens may grant sbx-user
+    (which every sandbox's RestrictedSids contain). Checked host-side by
+    reading the DACLs."""
     import hostwin
     from probes import Shell
-    from syshelp import LiveSession, sbx_status
+    from syshelp import LiveSession, job_name, sbx_status
 
     cmd = Shell("cmd")
     configure(pair.a.path, shell=cmd.name)
@@ -38,8 +39,16 @@ def test_99_runner_dacls_exclude_sandbox(pair):
         runner = sbx_status(pair.a.path)["pids"][0]
         sbx_user = hostwin.account_sid("sbx-user")
         allowed = {"SY", hostwin.account_sid(os.environ["USERNAME"])}
-        for what, sddl in (("process", hostwin.process_dacl(runner)),
-                           ("token", hostwin.process_token_dacl(runner))):
+        # Unrestricted helpers: the runner and its pseudo-console host —
+        # every child of the runner that isn't in the sandbox's job.
+        in_job = set(hostwin.job_pids(job_name(pair.a.name)))
+        helpers = [runner] + [p for p, parent in hostwin.parent_pids().items()
+                              if parent == runner and p not in in_job]
+        assert len(helpers) >= 2, f"no pseudo-console host found under runner {runner}"
+        checks = [(f"{what} of {pid}", read(pid)) for pid in helpers
+                  for what, read in (("process", hostwin.process_dacl),
+                                     ("token", hostwin.process_token_dacl))]
+        for what, sddl in checks:
             trustees = set(re.findall(r"\([^;]*;[^;]*;[^;]*;[^;]*;[^;]*;([^)]*)\)", sddl))
             assert trustees <= allowed, f"runner {what} DACL grants {trustees - allowed}: {sddl}"
     finally:

@@ -4,7 +4,7 @@ Deviations from `plan.md` and follow-ups noticed during implementation.
 
 ## Deviations
 
-- ConPTY replaced with pipe-redirected I/O (temporary) — ConPTY produced zero
+- ConPTY (restored) — was briefly replaced with pipe-redirected I/O after it produced zero
   output and was dropped for anonymous pipes (runner↔shell) relayed over named
   pipes (engine↔runner). The recorded cause, "restricted tokens / ctypes
   marshalling", was wrong. Branch `worktree-conpty-spec` (commit `4417636`)
@@ -16,7 +16,11 @@ Deviations from `plan.md` and follow-ups noticed during implementation.
      pseudo-console — so under redirected stdio (pytest, CI) output bypassed
      the ConPTY. Launch with `STARTF_USESTDHANDLES` and NULL std handles.
   That branch then drove the shell through ConPTY under a restricted token.
-  Never merged; ConPTY is the intended design (see spec, Terminal).
+  Ported onto main, on top of main's token and DACL design. Two new
+  constraints: the runner must create the pseudo-console before locking its
+  default DACL (CreatePseudoConsole fails with access denied after), and it
+  then locks conhost too; a console has no EOF, so piped stdin ending types
+  `exit`.
 
 - Shell launched without `CREATE_NO_WINDOW` — restricted tokens cannot create a
   new console subsystem. The shell inherits the runner's hidden console instead.
@@ -97,7 +101,3 @@ Deviations from `plan.md` and follow-ups noticed during implementation.
 - TUI — deferred per spec, not implemented.
 - Custom network presets — deferred per spec.
 - Log capture and forwarding — deferred per spec.
-- ConPTY revisit — may work on newer Windows builds or with different ctypes
-  approach. Current pipe-based I/O is functional but lacks terminal emulation
-  features (colours, cursor positioning).
-- Console resize propagation — not implemented (irrelevant without ConPTY).

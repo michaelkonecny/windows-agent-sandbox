@@ -117,7 +117,7 @@ sbx status [name]           # detailed status of one sandbox; when running, PIDs
 sbx uninstall               # removes all sandbox infrastructure (elevated)
 ```
 
-`sbx start` with non-console stdin (pipe or file) relays it to the shell and exits with the shell's exit code — makes the sandbox scriptable and system-testable.
+`sbx start` with non-console stdin (pipe or file) relays it to the shell and exits with the shell's exit code — makes the sandbox scriptable and system-testable. Line endings become Enter (CR). When stdin runs out, sbx types `exit` at the shell — a console has no end-of-input.
 
 `[name]` — optional sandbox name (alias), project path, or the project's `.sandbox\config.json` path. Defaults to the current directory. An unknown name or path is reported as a one-line error with a non-zero exit code — never a Python traceback.
 
@@ -248,7 +248,7 @@ Sandbox user credentials are stored DPAPI-encrypted during install, read by the 
 
 Kernel-object security — no sandbox object has a NULL DACL.
 - Shell process and restricted token: full access for SYSTEM, the runner's logon SID and the sandbox's synthetic SID; query/synchronize (process) or query (token) for Everyone, so the host can verify owner and elevation. The token's default DACL carries the same full-access ACEs, so the shell's children are reachable by the same sandbox and no other.
-- Runner: after building the shell's token, and before the shell exists, the runner sets its own process, thread, token and default DACLs to SYSTEM and the host user — its token is unrestricted `sbx-user`.
+- Runner and pseudo-console host: after building the shell's token and the pseudo-console, and before the shell exists, the runner sets its own process, thread, token and default DACLs — and the same for the pseudo-console's conhost, its child — to SYSTEM and the host user. Both hold unrestricted `sbx-user` tokens. The lock comes last because creating the restricted token and the pseudo-console both reopen objects the runner creates, which the locked default DACL denies.
 - Job Object: SYSTEM and the host user only (stop, status, proxy lookups). The runner keeps its own handle; the shell inherits none.
 - Engine-runner I/O pipes: SYSTEM and the host user full, `sbx-user` read/write, one instance each, random name suffix passed on the runner's command line, so nothing can connect before the runner does.
 

@@ -94,7 +94,10 @@ class Engine:
         log.info("created sandbox %s (SID %s)", name, sid)
         return record
 
-    def start(self, sandbox: str | Path) -> StartHandle:
+    def start(
+        self, sandbox: str | Path, size: tuple[int, int] | None = None,
+    ) -> StartHandle:
+        """size: the host terminal's (cols, rows); None for the default."""
         from sbx.network import register_sandbox
         from sbx.process import start_sandbox
 
@@ -119,6 +122,7 @@ class Engine:
             shell=shell_path,
             network_preset=cfg.network,
             proxy_port=proxy_port,
+            **({"size": size} if size else {}),
         )
 
         if cfg.network != NetworkPreset.none:

@@ -18,8 +18,21 @@ CURL_OPTS = "-s -o NUL --connect-timeout 5 --max-time 10"
 _LINE = re.compile(r"^PROBE (\S+) (OK|DENIED)\s*$", re.MULTILINE)
 
 
+_OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*([@-~])")
+_ESC = re.compile(r"\x1b[@-Z\\-_]")
+
+
+def strip_vt(text: str) -> str:
+    """Screen text from a VT stream. Cursor positioning becomes a newline —
+    ConPTY may start a new line that way instead of with CR LF."""
+    text = _OSC.sub("", text)
+    text = _CSI.sub(lambda m: "\n" if m.group(1) in "Hf" else "", text)
+    return _ESC.sub("", text).replace("\r", "")
+
+
 def parse(output: str) -> dict[str, str]:
-    return {m.group(1): m.group(2) for m in _LINE.finditer(output)}
+    return {m.group(1): m.group(2) for m in _LINE.finditer(strip_vt(output))}
 
 
 def _curl_args(url: str, proxy: str | None) -> str:

@@ -8,12 +8,14 @@ elif len(sys.argv) >= 2 and sys.argv[1] == "_proxy":
     from sbx.proxy import run_proxy_main
 
     run_proxy_main()
-elif len(sys.argv) >= 8 and sys.argv[1] == "_run":
+elif len(sys.argv) >= 10 and sys.argv[1] == "_run":
     from sbx.process import execute_runner
 
-    name, sid, shell, port, nonce, host_sid = sys.argv[2:8]
+    name, sid, shell, port, nonce, host_sid, cols, rows = sys.argv[2:10]
     port = None if port == "-" else int(port)
-    sys.exit(execute_runner(name, sid, shell, port, nonce, host_sid))
+    sys.exit(execute_runner(
+        name, sid, shell, port, nonce, host_sid, (int(cols), int(rows)),
+    ))
 else:
     from sbx.cli import main
 

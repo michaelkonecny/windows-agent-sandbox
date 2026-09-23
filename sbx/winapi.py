@@ -1225,6 +1225,12 @@ def create_process_with_logon(
     return pi.hProcess, pi.hThread, pi.dwProcessId, pi.dwThreadId
 
 
+# Std handles for a pseudo-console child. A child that inherits std handles
+# writes to them instead of to its pseudo-console — so under redirected
+# stdio (pytest, CI) the pseudo-console would see nothing.
+NULL_STD_HANDLES = (0, 0, 0)
+
+
 def create_process_as_user(
     token: int, command_line: str,
     creation_flags: int = 0,
@@ -1232,10 +1238,15 @@ def create_process_as_user(
     attribute_list: int | None = None,
     std_handles: tuple[int, int, int] | None = None,
     process_sa: SECURITY_ATTRIBUTES | None = None,
+    inherit_handles: bool | None = None,
 ) -> tuple[int, int, int, int]:
+    """inherit_handles defaults to whether std_handles were given; pass
+    False with NULL_STD_HANDLES, where the point is to hand the child
+    nothing."""
     pi = PROCESS_INFORMATION()
     cmd = ctypes.create_unicode_buffer(command_line)
-    inherit_handles = std_handles is not None
+    if inherit_handles is None:
+        inherit_handles = std_handles is not None
     if attribute_list is not None:
         si_ex = STARTUPINFOEXW()
         si_ex.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
@@ -1379,11 +1390,17 @@ def init_proc_attribute_list(count: int) -> tuple:
 
 
 def update_proc_attribute_console(attr_list: int, hpc: int) -> None:
-    hpc_ref = ctypes.c_void_p(hpc)
+    """Attach a pseudo-console to a process about to be created.
+
+    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE takes the HPCON itself as lpValue,
+    not a pointer to it — unlike every other attribute. Pass a pointer and
+    every call still succeeds, but the child silently uses the parent's
+    console and the pseudo-console never sees any output.
+    """
     ok = kernel32.UpdateProcThreadAttribute(
         attr_list, 0,
         PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-        ctypes.byref(hpc_ref), ctypes.sizeof(hpc_ref),
+        hpc, ctypes.sizeof(ctypes.c_void_p),
         None, None,
     )
     if not ok:
@@ -1782,3 +1799,198 @@ def lock_current_process(sddl: str) -> None:
         set_kernel_object_dacl(token, sddl)
     finally:
         close_handle(token)
+
+
+# Console modes and input records (terminal relay)
+
+ENABLE_PROCESSED_INPUT = 0x0001
+ENABLE_LINE_INPUT = 0x0002
+ENABLE_ECHO_INPUT = 0x0004
+ENABLE_WINDOW_INPUT = 0x0008
+ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
+ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+KEY_EVENT = 0x0001
+WINDOW_BUFFER_SIZE_EVENT = 0x0004
+
+
+class SMALL_RECT(ctypes.Structure):
+    _fields_ = [
+        ("Left", wintypes.SHORT), ("Top", wintypes.SHORT),
+        ("Right", wintypes.SHORT), ("Bottom", wintypes.SHORT),
+    ]
+
+
+class KEY_EVENT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("bKeyDown", wintypes.BOOL),
+        ("wRepeatCount", wintypes.WORD),
+        ("wVirtualKeyCode", wintypes.WORD),
+        ("wVirtualScanCode", wintypes.WORD),
+        ("UnicodeChar", ctypes.c_wchar),
+        ("dwControlKeyState", wintypes.DWORD),
+    ]
+
+
+class WINDOW_BUFFER_SIZE_RECORD(ctypes.Structure):
+    _fields_ = [("dwSize", COORD)]
+
+
+class INPUT_RECORD_EVENT(ctypes.Union):
+    _fields_ = [
+        ("KeyEvent", KEY_EVENT_RECORD),
+        ("WindowBufferSizeEvent", WINDOW_BUFFER_SIZE_RECORD),
+    ]
+
+
+class INPUT_RECORD(ctypes.Structure):
+    _fields_ = [("EventType", wintypes.WORD), ("Event", INPUT_RECORD_EVENT)]
+
+
+class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", COORD), ("dwCursorPosition", COORD),
+        ("wAttributes", wintypes.WORD), ("srWindow", SMALL_RECT),
+        ("dwMaximumWindowSize", COORD),
+    ]
+
+
+kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+kernel32.SetConsoleMode.restype = wintypes.BOOL
+kernel32.GetConsoleScreenBufferInfo.argtypes = [
+    wintypes.HANDLE, ctypes.POINTER(CONSOLE_SCREEN_BUFFER_INFO),
+]
+kernel32.GetConsoleScreenBufferInfo.restype = wintypes.BOOL
+kernel32.ReadConsoleInputW.argtypes = [
+    wintypes.HANDLE, ctypes.POINTER(INPUT_RECORD),
+    wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+]
+kernel32.ReadConsoleInputW.restype = wintypes.BOOL
+
+
+def get_console_mode(handle: int) -> int:
+    mode = wintypes.DWORD()
+    if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return mode.value
+
+
+def set_console_mode(handle: int, mode: int) -> None:
+    if not kernel32.SetConsoleMode(handle, mode):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def console_window_size(handle: int) -> tuple[int, int]:
+    """Visible (cols, rows) of a console — the window, not the scrollback."""
+    info = CONSOLE_SCREEN_BUFFER_INFO()
+    if not kernel32.GetConsoleScreenBufferInfo(handle, ctypes.byref(info)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return (info.srWindow.Right - info.srWindow.Left + 1,
+            info.srWindow.Bottom - info.srWindow.Top + 1)
+
+
+def read_console_input(handle: int, max_records: int = 32) -> list[INPUT_RECORD]:
+    """Blocks until at least one console input event is available."""
+    buf = (INPUT_RECORD * max_records)()
+    count = wintypes.DWORD()
+    if not kernel32.ReadConsoleInputW(handle, buf, max_records, ctypes.byref(count)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return list(buf[:count.value])
+
+
+# Process/thread enumeration and locking another process's DACLs
+
+TH32CS_SNAPPROCESS = 0x2
+TH32CS_SNAPTHREAD = 0x4
+THREAD_ALL_ACCESS = 0x1FFFFF
+PROCESS_ALL_ACCESS = 0x1FFFFF
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260),
+    ]
+
+
+class THREADENTRY32(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+        ("th32ThreadID", wintypes.DWORD), ("th32OwnerProcessID", wintypes.DWORD),
+        ("tpBasePri", ctypes.c_long), ("tpDeltaPri", ctypes.c_long),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
+kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(THREADENTRY32)]
+kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(THREADENTRY32)]
+kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+kernel32.OpenThread.restype = wintypes.HANDLE
+advapi32.OpenProcessToken.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE),
+]
+
+
+def child_pids(parent_pid: int) -> list[int]:
+    snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    entry = PROCESSENTRY32W()
+    entry.dwSize = ctypes.sizeof(entry)
+    out = []
+    try:
+        ok = kernel32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            if entry.th32ParentProcessID == parent_pid:
+                out.append(entry.th32ProcessID)
+            ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        close_handle(snap)
+    return out
+
+
+def _thread_ids(pid: int) -> list[int]:
+    snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
+    entry = THREADENTRY32()
+    entry.dwSize = ctypes.sizeof(entry)
+    out = []
+    try:
+        ok = kernel32.Thread32First(snap, ctypes.byref(entry))
+        while ok:
+            if entry.th32OwnerProcessID == pid:
+                out.append(entry.th32ThreadID)
+            ok = kernel32.Thread32Next(snap, ctypes.byref(entry))
+    finally:
+        close_handle(snap)
+    return out
+
+
+def lock_process(pid: int, sddl: str) -> None:
+    """Replace the DACLs of another process, its threads and its token,
+    and its token's default DACL (threads it creates later)."""
+    proc = open_process(pid, PROCESS_ALL_ACCESS)
+    try:
+        token = wintypes.HANDLE()
+        if not advapi32.OpenProcessToken(
+            proc, WRITE_DAC | TOKEN_ADJUST_DEFAULT | TOKEN_QUERY, ctypes.byref(token),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            set_token_default_dacl(token.value, sddl)
+            set_kernel_object_dacl(token.value, sddl)
+        finally:
+            close_handle(token.value)
+        for tid in _thread_ids(pid):
+            th = kernel32.OpenThread(THREAD_ALL_ACCESS, False, tid)
+            if th:
+                try:
+                    set_kernel_object_dacl(th, sddl)
+                finally:
+                    close_handle(th)
+        set_kernel_object_dacl(proc, sddl)
+    finally:
+        close_handle(proc)
