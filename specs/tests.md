@@ -32,6 +32,7 @@ Rules:
 - Prefix every sandbox name with `sbxsys-` — makes leftovers identifiable.
 - Uninstall in a session-scoped finalizer, even after failures; delete fixture projects and the host secret.
 - Time-limit every session to 60 s; on timeout, `sbx stop` and fail.
+- Strip VT escape sequences from session output before parsing probe lines — once the shell runs in a ConPTY, escapes can sit at the start of a line.
 - Verify owner, elevation and process tree from the host side (`sbx status` PIDs + Win32 queries), not from inside the sandbox — `whoami` is unusable under `DISABLE_MAX_PRIVILEGE` (see notes.md).
 
 ### Lifecycle
@@ -65,6 +66,27 @@ Rules:
 94. [system] Kill the proxy while B (`claude-api-only`) runs → B's requests fail; no fallback to direct egress.
 95. [system] Host process reaches `https://example.com` while sandboxes run and after uninstall — firewall rules hit only `sbx-user`.
 96. [system] A sandbox that reaches the proxy's control port (loopback isn't firewalled) can't widen its own policy or stop the proxy — control commands need the secret from the host-only PID file.
+
+### Interactive console
+
+Goal: prove `sbx start` works the way a person uses it — typed into a real cmd window — including the terminal behaviour in spec (Terminal) and every isolation guarantee above.
+
+Harness:
+- Console session — the test hosts `cmd.exe` in a ConPTY it creates (as the unprivileged host user), writes keystrokes to its input, and reads its VT output. `sbx start` therefore sees a real console. ctypes only, no third-party packages.
+- Typing — keystrokes are written as the bytes a VT terminal sends: characters, `\r` for Enter, `\x7f` Backspace, `ESC [ A` Up, `\t` Tab, `\x03` Ctrl+C.
+- Screen text — output with VT sequences stripped; the raw stream is kept for assertions about escapes (test 104).
+- Prompts — the host cmd's prompt is set to `HOST$G`, the sandbox's to `SBX$G` right after entry (the sandbox gets `sbx-user`'s environment, not the host's `PROMPT`), so the test can tell which shell is waiting.
+- `expect(text)` waits for text on screen; every session and every wait is bounded (60 s per session, same rule as above).
+- Same opt-in gate, relaunch, preconditions, fixtures and `sbxsys-` names as the rest of the system suite.
+
+100. [system] Journey — in the hosted cmd type `python -m sbx init`, `create`, `start` for a fixture project → `SBX>` appears; a typed command runs and its output appears; `exit 3` → `HOST>` returns and `echo %errorlevel%` prints `3`; `destroy` → exit 0. No `Traceback` appears on screen at any point.
+101. [system] Addressing — `sbx start` by sandbox name and by config path both reach `SBX>`; `sbx start` of an unknown name prints a one-line error (no `Traceback`) and `%errorlevel%` is non-zero.
+102. [system] Line editing (per shell) — typed characters appear before Enter; `echo abx`, Backspace, `c`, Enter → prints `abc`; Up arrow recalls the previous command; Tab completes `C:\Win` to `C:\Windows`.
+103. [system] Ctrl+C (per shell) — start `ping -t 127.0.0.1` (cmd) / `ping 127.0.0.1 -t` or `sleep 600` (others) in the sandbox, send Ctrl+C → the command stops, the sandbox prompt returns, and the next command runs; the session did not end.
+104. [system] Colour — a sandbox command that emits a colour escape (PowerShell `Write-Host -ForegroundColor Red x`; cmd/git-bash `printf`/`echo` of `ESC[31m`) → the raw stream shows the escape reaching the host terminal intact.
+105. [system] Resize — resize the hosting ConPTY to a new width → a width query in the sandbox (`mode con` in cmd, `tput cols` in git-bash, `$Host.UI.RawUI.WindowSize.Width` in PowerShell) reports it.
+106. [system] Console modes restored — after the sandbox exits, the host cmd's line editing still works (typed text echoes, Backspace edits) — the host console was not left in VT input mode.
+107. [system] Isolation through the console (per shell) — re-run every probe scenario of tests 81–96 and 98 by typing the probe lines into the sandbox shell at `SBX>` instead of piping them; verdicts must match the piped runs. Scenarios needing two live sandboxes (84, 93) use two hosted consoles; host-side steps (killing the proxy in 94, ACL and file checks) stay host-side.
 
 ### Process isolation (per shell)
 

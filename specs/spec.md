@@ -119,7 +119,17 @@ sbx uninstall               # removes all sandbox infrastructure (elevated)
 
 `sbx start` with non-console stdin (pipe or file) relays it to the shell and exits with the shell's exit code — makes the sandbox scriptable and system-testable.
 
-`[name]` — optional sandbox name (alias). Defaults to current project directory name. Can also be a project path for disambiguation.
+`[name]` — optional sandbox name (alias), project path, or the project's `.sandbox\config.json` path. Defaults to the current directory. An unknown name or path is reported as a one-line error with a non-zero exit code — never a Python traceback.
+
+#### Terminal
+
+`sbx start` with a console embeds the sandboxed shell as a real terminal — the shell sees a console, not pipes. From the user's side it behaves like the shell run directly:
+- Typed characters echo as typed; Backspace, arrow keys, command history and Tab completion work as the shell provides them.
+- Colour and cursor escape sequences from the sandbox render in the host terminal; full-screen programs (editors, Claude Code's interactive UI) work.
+- Ctrl+C goes to the sandboxed shell (interrupts the running command); the host `sbx start` and the session keep running.
+- Resizing the host window resizes the sandbox's terminal.
+- When the shell exits, `sbx start` restores the host console's modes and returns the shell's exit code.
+- Host terminal without VT input support → degrade: output still renders; basic typing works, keys that need VT input (function keys, mouse) may not.
 
 The tool runs unprivileged. Operations that need admin (user account creation, bind links, WFP rules, ACLs) request elevation for just that action via UAC prompt. The user never has to launch the whole tool as admin.
 
@@ -224,6 +234,13 @@ Command runner pattern — avoids elevation for start/stop.
 2. The re-invoked instance (the "runner") is now running as `sbx-user` with a full token. It opens its own process token, calls `CreateRestrictedToken` with the `RestrictedSids` listed under Restricted tokens and synthetic SIDs, and `DISABLE_MAX_PRIVILEGE`.
 3. The runner calls `CreateProcessAsUser` with the restricted token to spawn the configured shell. This works without special privileges because the restricted token is derived from the runner's own logon session.
 4. The runner stays alive to relay I/O between the engine CLI and the sandboxed shell, and exits when the shell exits.
+
+Terminal — the runner creates a ConPTY (Windows pseudo-console: gives a process a real console while exposing its I/O as a VT byte stream on a pipe pair) under its own full token, and launches the shell attached to it. VT — in-band escape sequences for cursor, colour and screen control.
+- Pass the HPCON by value in `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`, and launch the shell with `STARTF_USESTDHANDLES` and NULL std handles — a child that inherits std handles writes there instead of to its pseudo-console (see notes.md).
+- The engine↔runner named pipes carry VT bytes both ways; relays use blocking reads, no polling.
+- Host side: save the console modes, enable VT input on the console input and VT processing on the output, keep processed input off (Ctrl+C travels as a byte), read `INPUT_RECORD`s and forward key events as VT bytes; restore modes in a `finally` — a console left in VT input mode stays broken.
+- Resize: the host sends a private OSC sequence, `ESC ] 9999 ; <cols> ; <rows> BEL`, on the input pipe; the runner strips it and calls `ResizePseudoConsole`. Initial size travels on the runner's command line.
+- Non-console stdin (scripts, system tests) is relayed into the pseudo-console input unchanged.
 
 Environment — nothing from the host crosses into the sandbox. The runner is started with no environment block, so it gets `sbx-user`'s profile environment; the engine passes the proxy port on the runner's command line. The shell's environment is `sbx-user`'s default block (`CreateEnvironmentBlock`: its own TEMP, USERPROFILE, APPDATA) plus `HTTPS_PROXY` when the preset has one. The shell starts in the sandbox workspace, `C:\Users\sbx-user\<sandbox-name>`.
 

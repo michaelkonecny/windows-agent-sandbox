@@ -4,10 +4,19 @@ Deviations from `plan.md` and follow-ups noticed during implementation.
 
 ## Deviations
 
-- ConPTY replaced with pipe-redirected I/O — ConPTY produced zero output under
-  restricted tokens on Windows 11 22621 (ctypes marshalling issue). Switched to
-  `STARTF_USESTDHANDLES` with anonymous inheritable pipes. Relay threads bridge
-  named pipes (engine↔runner IPC) and anonymous pipes (runner↔shell I/O).
+- ConPTY replaced with pipe-redirected I/O (temporary) — ConPTY produced zero
+  output and was dropped for anonymous pipes (runner↔shell) relayed over named
+  pipes (engine↔runner). The recorded cause, "restricted tokens / ctypes
+  marshalling", was wrong. Branch `worktree-conpty-spec` (commit `4417636`)
+  found two bugs in our code, both confirmed by A/B test:
+  1. `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` takes the HPCON by value; we passed
+     a pointer. Every call succeeded and the child silently used the parent's
+     console.
+  2. A child that inherits std handles writes to them, not to its
+     pseudo-console — so under redirected stdio (pytest, CI) output bypassed
+     the ConPTY. Launch with `STARTF_USESTDHANDLES` and NULL std handles.
+  That branch then drove the shell through ConPTY under a restricted token.
+  Never merged; ConPTY is the intended design (see spec, Terminal).
 
 - Shell launched without `CREATE_NO_WINDOW` — restricted tokens cannot create a
   new console subsystem. The shell inherits the runner's hidden console instead.
