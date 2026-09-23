@@ -51,7 +51,7 @@ Entry points:
 
 Role: thin ctypes wrapper over every Win32 API the engine needs.
 
-- Holds: DLL bindings, struct definitions, constants, low-level helper functions (SID allocation, handle management). Covers: bind filter, user and local-group management, profiles (`DeleteProfileW`, `CreateEnvironmentBlock`), SIDs, ACLs (propagating via `SetNamedSecurityInfo`, non-propagating via `SetFileSecurity`), SDDL security descriptors for kernel objects, restricted tokens, process creation, Job Objects (`CreateJobObject`/`AssignProcessToJobObject`/`IsProcessInJob`/`TerminateJobObject`/process-ID list), named and anonymous pipes, DPAPI, TCP table (`GetExtendedTcpTable`). ConPTY bindings are kept but unused (see Resolved decisions).
+- Holds: DLL bindings, struct definitions, constants, low-level helper functions (SID allocation, handle management). Covers: bind filter, user and local-group management, profiles (`DeleteProfileW`, `CreateEnvironmentBlock`), SIDs, ACLs (propagating via `SetNamedSecurityInfo`, non-propagating via `SetFileSecurity`), SDDL security descriptors for kernel objects, restricted tokens, process creation, Job Objects (`CreateJobObject`/`AssignProcessToJobObject`/`IsProcessInJob`/`TerminateJobObject`/process-ID list), ConPTY (`CreatePseudoConsole`/`ResizePseudoConsole`/`ClosePseudoConsole`), named pipes, DPAPI, TCP table (`GetExtendedTcpTable`).
 - Notes: evolved from `poc/winapi.py`. Pure functions and stateless calls — no sandbox concepts leak in. Adding a new Win32 call means adding it here, nowhere else.
 - Depends on: nothing (leaf module).
 
@@ -105,12 +105,12 @@ Role: manage WFP rules and the proxy lifecycle.
 
 ### process
 
-Role: launch and manage sandboxed shell processes via the command runner pattern, with pipe-relayed I/O.
+Role: launch and manage sandboxed shell processes via the command runner pattern, with full interactive terminal support via ConPTY.
 
-- Holds: runner launch (`CreateProcessWithLogonW` to re-invoke engine as `sbx-user`), named Job Object creation, engine↔runner named pipes, runner↔shell anonymous pipes, I/O relay, live PID listing (Job Object process-ID list), process termination, re-invocation command line construction.
-- Notes: the runner is launched with no environment block (so it gets `sbx-user`'s profile env), with the sbx package root as working directory (so `-m sbx` resolves), and with sandbox name, SID, shell, proxy port, pipe-name nonce and host SID on its command line. The engine creates two named pipes (`\\.\pipe\sbx-<name>-<nonce>-in|out`, single instance; SYSTEM + host full, `sbx-user` read/write). The runner creates a named Job Object (`Global\sbx-job-<sandbox-name>`, kill-on-close; SYSTEM + host user only), builds the restricted token, locks itself, then creates the shell suspended, assigns it to the job, and resumes it. The Job Object ensures all child processes (anything the user launches from the shell) inherit membership — this is how the proxy identifies which sandbox a connecting process belongs to. The runner's pipe ends are non-inheritable, so the shell sees EOF when the engine closes its input. The engine CLI relays console keystrokes, or non-console stdin (scriptable `sbx start`), and exits with the shell's exit code. On stop, the engine terminates the Job Object (which kills the shell and all its children).
+- Holds: runner launch (`CreateProcessWithLogonW` to re-invoke engine as `sbx-user`), named Job Object creation, ConPTY pseudo-console creation and management, engine↔runner named pipes, I/O relay between the CLI terminal and the runner's PTY, live PID listing (Job Object process-ID list), process termination, re-invocation command line construction.
+- Notes: the runner is launched with no environment block (so it gets `sbx-user`'s profile env), with the sbx package root as working directory (so `-m sbx` resolves), and with sandbox name, SID, shell, proxy port, pipe-name nonce and host SID on its command line. The engine creates two named pipes (`\\.\pipe\sbx-<name>-<nonce>-in|out`, single instance; SYSTEM + host full, `sbx-user` read/write). The runner creates a named Job Object (`Global\sbx-job-<sandbox-name>`, kill-on-close; SYSTEM + host user only), builds the restricted token, locks itself, creates a ConPTY, then creates the shell suspended — attached to the pseudo-console, assigned to the job — and resumes it. The Job Object ensures all child processes (anything the user launches from the shell) inherit membership — this is how the proxy identifies which sandbox a connecting process belongs to. ConPTY gives proper terminal emulation — ANSI escapes, line editing, tab completion, Ctrl+C handling, window resize. The engine CLI relays between its own console and the PTY's I/O pipes, or relays non-console stdin (scriptable `sbx start`), and exits with the shell's exit code. On stop, the engine terminates the Job Object (which kills the shell and all its children).
 - Trust boundary: this module's code runs in two contexts — engine CLI side (host user, unprivileged) handles runner launch and I/O relay; runner side (`sbx-user`) handles token creation, Job Object setup, and shell spawn. Same pattern as the elevation module.
-- Depends on: winapi (process, pipe, Job Object, security-descriptor and environment APIs), tokens (called by the runner side), identity (reads credentials for `CreateProcessWithLogonW`), store (registers/deregisters PIDs).
+- Depends on: winapi (process, pipe, ConPTY, Job Object, security-descriptor and environment APIs), tokens (called by the runner side), identity (reads credentials for `CreateProcessWithLogonW`), store (registers/deregisters PIDs).
 
 ### elevation
 
@@ -416,7 +416,6 @@ All paths are `pathlib.Path` objects internally. SIDs are strings (`S-1-...`) ex
 - Proxy ↔ engine communication — local TCP socket. Python asyncio has clean TCP support; Windows named pipes are fiddly in Python.
 - Store locking — file-level lock (`msvcrt.locking`).
 - Process tree tracking — Job Objects. Runner creates a named Job Object (`Global\sbx-job-<sandbox-name>`), shell and all children inherit membership. Proxy opens the Job Object by name and calls `IsProcessInJob` to identify which sandbox a connecting process belongs to. Security descriptor on the Job Object grants SYSTEM and the host user only.
-- Terminal I/O — pipes, not ConPTY. ConPTY produced no output under restricted tokens on build 22621; anonymous pipes (runner↔shell) plus named pipes (engine↔runner) work for every shell but give no terminal emulation. ConPTY revisit is a follow-up (notes.md).
 - Shell spawn API — `CreateProcessAsUser` with the restricted token, created suspended, assigned to the job, then resumed (no window where a child escapes the job).
 - One token shape for all shells — git-bash no longer runs without RestrictedSids; the logon SID and account SID in RestrictedSids make Cygwin work (see tokens).
 - Proxy port — fixed (47480), so the install-time firewall rule can name it. Control port stays dynamic, authenticated by a per-run secret.
@@ -426,4 +425,4 @@ All paths are `pathlib.Path` objects internally. SIDs are strings (`S-1-...`) ex
 ## Open decisions
 
 - TUI framework — Textual or similar. Deferred per spec.
-- ConPTY revisit and window resize propagation — only if ConPTY can be made to work under restricted tokens.
+- ConPTY window resize propagation — the engine CLI needs to detect its own console resize events and forward them to the pseudo-console via `ResizePseudoConsole`. Straightforward but needs testing across shell types.
