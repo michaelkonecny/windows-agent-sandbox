@@ -168,6 +168,50 @@ class Shell:
     def exit(self) -> str:
         return "exit"
 
+    # Interactive-console snippets. None of the typed text contains what
+    # the test then waits for, so an echoed command line never matches.
+
+    def set_prompt(self) -> str:
+        """Make the prompt `SBX> `."""
+        if self.name == "cmd":
+            return "prompt SBX$G"
+        if self.name == "git-bash":
+            return "PS1='SB''X> '"
+        return "function prompt { 'SB' + 'X> ' }"
+
+    def calc(self, a: int, b: int) -> str:
+        """Prints a*b alone on a line."""
+        if self.name == "cmd":
+            return f"set /a {a}*{b}"
+        if self.name == "git-bash":
+            return f"echo $(({a}*{b}))"
+        return f"{a}*{b}"
+
+    def complete_windows(self) -> str:
+        """A command ending in `C:\Win` that, once Tab completes it to
+        C:\Windows, lists that directory one entry per line."""
+        if self.name == "cmd":
+            return r"dir /b C:\Win"
+        if self.name == "git-bash":
+            return "ls -1 /c/Win"
+        return r"Get-ChildItem -Name C:\Win"
+
+    def width_query(self) -> str:
+        """Prints the terminal width."""
+        if self.name == "cmd":
+            return "mode con"
+        if self.name == "git-bash":
+            return "stty size"
+        return "$Host.UI.RawUI.WindowSize.Width"
+
+    def colour(self, marker: str) -> str:
+        """Makes `marker` appear in red."""
+        if self.name == "cmd":
+            return f"prompt $E[31m{marker}$E[0m$G"
+        if self.name == "git-bash":
+            return f"printf '\\033[31m%s\\033[0m\\n' {marker}"
+        return f"Write-Host -ForegroundColor Red {marker}"
+
 
 def _posix(path: str) -> str:
     return path.replace("\\", "/")

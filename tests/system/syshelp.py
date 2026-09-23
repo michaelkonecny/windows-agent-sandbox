@@ -22,6 +22,12 @@ SESSION_TIMEOUT = 60
 SBX_HOME = Path(os.environ.get("LOCALAPPDATA", "")) / "sbx"
 WORKSPACE = Path(r"C:\Users\sbx-user")
 JOB_PREFIX = "Global\\sbx-job-"
+# What a person types to run sbx in the hosted cmd.
+SBX_TYPED = f'"{sys.executable}" -m sbx'
+
+# How sessions reach the sandbox: "piped" (script on stdin) or "console"
+# (typed into cmd hosted in a ConPTY). Set per test by the `via` fixture.
+VIA = "piped"
 
 
 def _env(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -118,8 +124,10 @@ def run_session(
     project: Path, shell: Shell, lines: list[str],
     env: dict[str, str] | None = None,
 ) -> SessionResult:
-    """One `sbx start` with a probe script on stdin, ending with `exit`.
+    """One `sbx start` running `lines` in the sandbox, ending with `exit`.
     `env` adds variables to the host-side `sbx start` process."""
+    if VIA == "console":
+        return _console_session(project, shell, lines, env or {})
     try:
         res = subprocess.run(
             [sys.executable, "-m", "sbx", "start", str(project)],
@@ -135,8 +143,15 @@ def run_session(
     return SessionResult(res.returncode, out, err, probes.parse(out))
 
 
-class LiveSession:
+def LiveSession(project: Path, shell: Shell):
     """A `sbx start` kept open so the host can inspect it mid-session."""
+    if VIA == "console":
+        return ConsoleLiveSession(project, shell)
+    return PipedLiveSession(project, shell)
+
+
+class PipedLiveSession:
+    """LiveSession with the probe lines piped to `sbx start`."""
 
     def __init__(self, project: Path, shell: Shell) -> None:
         self.project = project
@@ -219,3 +234,97 @@ def host_curl(url: str) -> int:
     return subprocess.run(
         [probes.CURL, *probes.CURL_OPTS.split(), url], capture_output=True,
     ).returncode
+
+
+# ── Console sessions: cmd hosted in a ConPTY, typed at ──
+
+def open_console():
+    """A hosted cmd at its `HOST>` prompt, in the repo root."""
+    from console import ConsoleSession
+
+    c = ConsoleSession(str(REPO))
+    c.expect("HOST>")
+    return c
+
+
+def enter_sandbox(c, ref: str | Path, shell: Shell) -> None:
+    """Type `sbx start <ref>` and wait for the sandbox's `SBX>` prompt."""
+    c.line(f"{SBX_TYPED} start {ref}")
+    c.line(shell.set_prompt())
+    c.expect("SBX>", SESSION_TIMEOUT)
+
+
+def leave_sandbox(c, shell: Shell) -> int:
+    """Type `exit`, wait for the host prompt; return the exit code."""
+    c.line(shell.exit())
+    c.expect("HOST>", SESSION_TIMEOUT)
+    c.line("echo rc=%errorlevel%")
+    return int(c.expect(r"rc=(-?\d+)").group(1))
+
+
+def _console_session(
+    project: Path, shell: Shell, lines: list[str], env: dict[str, str],
+) -> SessionResult:
+    c = open_console()
+    try:
+        for key, value in env.items():
+            c.line(f"set {key}={value}")
+        enter_sandbox(c, project, shell)
+        for line in lines:
+            c.line(line)
+        code = leave_sandbox(c, shell)
+    except TimeoutError as e:
+        sbx("stop", str(project))
+        pytest.fail(f"console session: {e}")
+    finally:
+        c.close()
+    out = c.text()
+    return SessionResult(code, out, "", probes.parse(out))
+
+
+class ConsoleLiveSession:
+    """LiveSession typed into a hosted cmd."""
+
+    def __init__(self, project: Path, shell: Shell) -> None:
+        self.project = project
+        self.shell = shell
+        self.deadline = time.monotonic() + SESSION_TIMEOUT
+        self.c = open_console()
+        try:
+            enter_sandbox(self.c, project, shell)
+        except TimeoutError as e:
+            self.kill()
+            pytest.fail(f"console session: {e}")
+
+    @property
+    def output(self) -> str:
+        return self.c.text()
+
+    def send(self, lines: list[str]) -> None:
+        for line in lines:
+            self.c.line(line)
+
+    def probes(self) -> dict[str, str]:
+        return probes.parse(self.c.text())
+
+    def wait_probe(self, pid: str) -> str:
+        while time.monotonic() < self.deadline:
+            got = self.probes().get(pid)
+            if got is not None:
+                return got
+            time.sleep(0.1)
+        self.kill()
+        pytest.fail(f"probe {pid} never reported\n{self.c.text()[-3000:]}")
+
+    def close(self) -> int:
+        try:
+            return leave_sandbox(self.c, self.shell)
+        except TimeoutError as e:
+            self.kill()
+            pytest.fail(f"console session did not end: {e}")
+        finally:
+            self.c.close()
+
+    def kill(self) -> None:
+        sbx("stop", str(self.project))
+        self.c.close()

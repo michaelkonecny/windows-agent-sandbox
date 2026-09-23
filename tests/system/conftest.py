@@ -244,3 +244,22 @@ def shell(request):
     if not request.param.installed():
         pytest.skip(f"shell not installed: {request.param.name}")
     return request.param
+
+
+_VIA_TESTS = re.compile(r"test_(8[1-9]|9[0-8])_")  # test 107: 81-96 and 98 again, typed
+
+
+def pytest_generate_tests(metafunc) -> None:
+    if "via" in metafunc.fixturenames and _VIA_TESTS.match(metafunc.function.__name__):
+        metafunc.parametrize("via", ["piped", "console"], indirect=True)
+
+
+@pytest.fixture(autouse=True)
+def via(request):
+    """How this test's sessions reach the sandbox: piped stdin, or typed
+    into a hosted cmd (test 107). Tests outside 81-98 always pipe."""
+    import syshelp
+
+    syshelp.VIA = getattr(request, "param", "piped")
+    yield syshelp.VIA
+    syshelp.VIA = "piped"
