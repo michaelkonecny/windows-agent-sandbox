@@ -224,3 +224,16 @@ def test_interactive_shell(tmp_path):
         stop_sandbox("itest")
         winapi.wait_for_process(handle.runner_process)
         handle.close()
+
+
+def test_resolve_by_name_project_or_config(engine, config_path, tmp_project):
+    """[name] accepts the sandbox name, the project path, or its config path."""
+    with mock.patch("sbx.engine.run_elevated", return_value={"created": True}):
+        engine.create(config_path, name="alias")
+    for ref in ("alias", str(tmp_project), str(config_path)):
+        assert engine.status(ref)["name"] == "alias", ref
+
+
+def test_resolve_unknown(engine):
+    with pytest.raises(SandboxError, match="no sandbox"):
+        engine.status("nope-not-a-sandbox")

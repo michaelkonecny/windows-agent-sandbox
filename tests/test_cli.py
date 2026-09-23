@@ -218,3 +218,13 @@ def test_start_piped_stdin_eof(piped_sandbox):
     res = _sbx_start(project, env, b"echo EOF_OK\n")
     assert b"EOF_OK" in res.stdout, res.stderr
     assert res.returncode == 0, res.stderr
+
+
+def test_engine_error_is_one_line(runner, tmp_path):
+    """Test 67: an engine error prints one line on stderr — no traceback."""
+    with mock.patch("sbx.engine.Store", lambda: __import__("sbx.store", fromlist=["Store"]).Store(tmp_path / "s.json")):
+        result = runner.invoke(main, ["status", "no-such-sandbox"])
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert result.output.strip().startswith("error:"), result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)

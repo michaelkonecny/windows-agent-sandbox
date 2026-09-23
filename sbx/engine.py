@@ -94,14 +94,12 @@ class Engine:
         log.info("created sandbox %s (SID %s)", name, sid)
         return record
 
-    def start(self, project_path: str | Path) -> StartHandle:
+    def start(self, sandbox: str | Path) -> StartHandle:
         from sbx.network import register_sandbox
         from sbx.process import start_sandbox
 
-        project_path = Path(project_path).resolve()
-        record = self.store.get(project_path)
-        if record is None:
-            raise SandboxError(f"no sandbox for {project_path}")
+        record = self._resolve(sandbox)
+        project_path = record.project_path
 
         cfg = load_config(record.config_path)
         shell_path = resolve_shell(cfg.shell)
@@ -135,14 +133,12 @@ class Engine:
         log.info("started sandbox %s", record.name)
         return handle
 
-    def stop(self, project_path: str | Path) -> None:
+    def stop(self, sandbox: str | Path) -> None:
         from sbx.network import deregister_sandbox
         from sbx.process import _job_name, stop_sandbox
 
-        project_path = Path(project_path).resolve()
-        record = self.store.get(project_path)
-        if record is None:
-            raise SandboxError(f"no sandbox for {project_path}")
+        record = self._resolve(sandbox)
+        project_path = record.project_path
 
         if record.name in self._handles:
             self._handles[record.name].close()
@@ -165,15 +161,18 @@ class Engine:
         )
         log.info("stopped sandbox %s", record.name)
 
-    def session_ended(self, project_path: str | Path) -> None:
+    def session_ended(self, sandbox: str | Path) -> None:
         """Record that the shell of a started sandbox has exited."""
         from sbx.network import deregister_sandbox
         from sbx.process import _job_name
 
-        project_path = Path(project_path).resolve()
-        record = self.store.get(project_path)
-        if record is None or record.state != SandboxState.running:
+        try:
+            record = self._resolve(sandbox)
+        except SandboxError:
             return
+        if record.state != SandboxState.running:
+            return
+        project_path = record.project_path
         self._handles.pop(record.name, None)
         try:
             deregister_sandbox(_job_name(record.name))
@@ -181,14 +180,12 @@ class Engine:
             log.warning("deregister failed: %s", e)
         self.store.update(project_path, state=SandboxState.stopped, pids=[])
 
-    def destroy(self, project_path: str | Path) -> None:
-        project_path = Path(project_path).resolve()
-        record = self.store.get(project_path)
-        if record is None:
-            raise SandboxError(f"no sandbox for {project_path}")
+    def destroy(self, sandbox: str | Path) -> None:
+        record = self._resolve(sandbox)
+        project_path = record.project_path
 
         if record.state == SandboxState.running:
-            self.stop(project_path)
+            self.stop(record.name)
 
         run_elevated("destroy_mounts", {"sandbox_name": record.name})
         self.store.remove(project_path)
@@ -206,14 +203,27 @@ class Engine:
         run_elevated("uninstall_cleanup")
         log.info("uninstalled sbx")
 
+    def _resolve(self, sandbox: str | Path) -> SandboxRecord:
+        """Find a sandbox by name, project path, or the project's config path."""
+        record = self.store.get_by_name(str(sandbox))
+        if record is not None:
+            return record
+        path = Path(sandbox).resolve()
+        candidates = [path]
+        if path.parent.name == CONFIG_DIR:
+            candidates.append(path.parent.parent)
+        for candidate in candidates:
+            record = self.store.get(candidate)
+            if record is not None:
+                return record
+        raise SandboxError(f"no sandbox named or at {sandbox}")
+
     def list(self) -> list[SandboxRecord]:
         return self.store.list()
 
-    def status(self, project_path: str | Path) -> dict:
-        project_path = Path(project_path).resolve()
-        record = self.store.get(project_path)
-        if record is None:
-            raise SandboxError(f"no sandbox for {project_path}")
+    def status(self, sandbox: str | Path) -> dict:
+        record = self._resolve(sandbox)
+        project_path = record.project_path
 
         result = {
             "name": record.name,

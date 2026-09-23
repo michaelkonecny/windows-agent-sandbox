@@ -104,7 +104,18 @@ def _setup_logging(verbose: bool = False, debug: bool = False) -> None:
     )
 
 
-@click.group()
+class _Group(click.Group):
+    """Turns engine errors into one line on stderr and exit code 1."""
+
+    def invoke(self, ctx: click.Context):
+        try:
+            return super().invoke(ctx)
+        except SandboxError as e:
+            click.echo(f"error: {e}", err=True)
+            ctx.exit(1)
+
+
+@click.group(cls=_Group)
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output.")
 @click.option("--debug", is_flag=True, help="Enable debug output.")
 @click.pass_context
@@ -145,32 +156,32 @@ def create(ctx: click.Context, config_path: str, name: str | None) -> None:
 
 
 @main.command()
-@click.argument("project_path", default=".")
+@click.argument("sandbox", default=".")
 @click.pass_context
-def start(ctx: click.Context, project_path: str) -> None:
+def start(ctx: click.Context, sandbox: str) -> None:
     engine = _engine(ctx)
-    handle = engine.start(project_path)
+    handle = engine.start(sandbox)
     try:
         code = _session(handle)
     finally:
         handle.close()
-        engine.session_ended(project_path)
+        engine.session_ended(sandbox)
     sys.exit(code)
 
 
 @main.command()
-@click.argument("project_path", default=".")
+@click.argument("sandbox", default=".")
 @click.pass_context
-def stop(ctx: click.Context, project_path: str) -> None:
-    _engine(ctx).stop(project_path)
+def stop(ctx: click.Context, sandbox: str) -> None:
+    _engine(ctx).stop(sandbox)
     click.echo("sandbox stopped.")
 
 
 @main.command()
-@click.argument("project_path", default=".")
+@click.argument("sandbox", default=".")
 @click.pass_context
-def destroy(ctx: click.Context, project_path: str) -> None:
-    _engine(ctx).destroy(project_path)
+def destroy(ctx: click.Context, sandbox: str) -> None:
+    _engine(ctx).destroy(sandbox)
     click.echo("sandbox destroyed.")
 
 
@@ -193,9 +204,9 @@ def list_cmd(ctx: click.Context) -> None:
 
 
 @main.command()
-@click.argument("project_path", default=".")
+@click.argument("sandbox", default=".")
 @click.pass_context
-def status(ctx: click.Context, project_path: str) -> None:
-    info = _engine(ctx).status(project_path)
+def status(ctx: click.Context, sandbox: str) -> None:
+    info = _engine(ctx).status(sandbox)
     for k, v in info.items():
         click.echo(f"  {k}: {v}")
