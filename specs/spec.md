@@ -119,7 +119,7 @@ sbx uninstall               # removes all sandbox infrastructure (elevated)
 
 `sbx start` with non-console stdin (pipe or file) relays it to the shell and exits with the shell's exit code — makes the sandbox scriptable and system-testable. Line endings become Enter (CR). When stdin runs out, sbx types `exit` at the shell — a console has no end-of-input.
 
-`[name]` — optional sandbox name (alias), project path, or the project's `.sandbox\config.json` path. Defaults to the current directory. An unknown name or path is reported as a one-line error with a non-zero exit code — never a Python traceback.
+`[name]` — optional sandbox name (alias), project path, or the project's `.sandbox\config.json` path. Defaults to the current directory. An unknown name or path is reported as a one-line error with a non-zero exit code — never a Python traceback. So is a sandbox that fails to start after the runner launched (e.g. the shell can't be created): `sbx start` names the runner log, `C:\Users\Public\sbx-runner.log`, instead of returning silently.
 
 #### Terminal
 

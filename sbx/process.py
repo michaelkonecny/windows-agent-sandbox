@@ -18,6 +18,11 @@ log = logging.getLogger(__name__)
 PIPE_PREFIX = r"\\.\pipe\sbx-"
 RELAY_BUF = 4096
 
+# The runner's exit code when it fails before the shell runs — "SBXF",
+# far outside what shells return — and where it logs why.
+RUNNER_FAILED = 0x53425846
+RUNNER_LOG = Path(r"C:\Users\Public") / "sbx-runner.log"
+
 # Pseudo-console size when the host has no console to measure (piped
 # stdin, tests). Wide, so long command lines don't wrap in the output.
 DEFAULT_SIZE = (200, 50)
@@ -289,10 +294,9 @@ def execute_runner(
     SEM_NOGPFAULTERRORBOX = 0x0002
     ctypes.windll.kernel32.SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)
 
-    log_path = Path(r"C:\Users\Public") / "sbx-runner.log"
     _log_file = None
     try:
-        _log_file = open(log_path, "w", encoding="utf-8")
+        _log_file = open(RUNNER_LOG, "w", encoding="utf-8")
     except OSError:
         pass
 
@@ -312,7 +316,7 @@ def execute_runner(
     except Exception:
         import traceback
         _log(traceback.format_exc())
-        raise
+        return RUNNER_FAILED
     finally:
         if _log_file:
             _log_file.close()

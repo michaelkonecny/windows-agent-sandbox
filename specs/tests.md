@@ -198,5 +198,6 @@ Harness:
 
 66. Each subcommand (`install`, `init`, `create`, `start`, `stop`, `destroy`, `uninstall`, `list`, `status`) maps to the correct engine method and returns exit code 0 on success.
 67. Engine error → non-zero exit code and human-readable message on stderr.
+108. [integration] Runner fails before the shell runs (shell executable can't be launched) → the runner exits with its dedicated failure code, not a shell's; `sbx start` prints one line `error: ...` naming the runner log, exit code 1, no traceback.
 73. [integration] `sbx start` with piped (non-console) stdin — relays stdin to the shell, returns when the shell exits (after `exit` or stdin EOF), exit code = shell's exit code. Prerequisite for system tests.
 

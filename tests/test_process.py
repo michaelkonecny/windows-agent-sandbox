@@ -288,6 +288,22 @@ def test_git_bash_via_shell_kind(
 
 
 @pytest.mark.integration
+def test_runner_failure_code(sandbox_name, sandbox_sid, credentials_path, tmp_path):
+    """Test 108: a runner that fails before the shell runs exits with its
+    own failure code — here the shell is a file sbx-user can't read."""
+    import shutil
+    from sbx.process import RUNNER_FAILED
+
+    shell = tmp_path / "cmd.exe"
+    shutil.copy(r"C:\Windows\System32\cmd.exe", shell)
+    handle = _start(sandbox_name, sandbox_sid, credentials_path, shell=str(shell))
+    try:
+        assert winapi.wait_for_process(handle.runner_process, 30_000) == RUNNER_FAILED
+    finally:
+        handle.close()
+
+
+@pytest.mark.integration
 def test_default_credentials_path(sandbox_name, sandbox_sid):
     """Test 70: start_sandbox works with the default credentials path.
     All other tests pass an explicit credentials_path, sidestepping the
@@ -349,3 +365,4 @@ def _get_job_pids(job: int) -> list[int]:
     if not ok:
         raise ctypes.WinError(ctypes.get_last_error())
     return [info.ProcessIdList[i] for i in range(info.NumberOfProcessIdsInList)]
+

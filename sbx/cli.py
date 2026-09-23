@@ -243,7 +243,7 @@ def create(ctx: click.Context, config_path: str, name: str | None) -> None:
 @click.pass_context
 def start(ctx: click.Context, sandbox: str) -> None:
     from sbx import winapi
-    from sbx.process import DEFAULT_SIZE
+    from sbx.process import DEFAULT_SIZE, RUNNER_FAILED, RUNNER_LOG
 
     engine = _engine(ctx)
     console = _open_console()
@@ -262,6 +262,8 @@ def start(ctx: click.Context, sandbox: str) -> None:
         # parked in ReadConsoleInput on CONIN$, and closing it would wait
         # for that read — forever.
         engine.session_ended(sandbox)
+    if code == RUNNER_FAILED:
+        raise SandboxError(f"sandbox failed to start — see {RUNNER_LOG}")
     sys.exit(code)
 
 

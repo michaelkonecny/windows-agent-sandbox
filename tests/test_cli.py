@@ -228,3 +228,18 @@ def test_engine_error_is_one_line(runner, tmp_path):
     assert "Traceback" not in result.output
     assert result.output.strip().startswith("error:"), result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_start_reports_runner_failure(runner):
+    """Test 108: sbx start turns the runner's failure code into one line."""
+    from sbx.process import RUNNER_FAILED
+
+    engine = mock.MagicMock()
+    with mock.patch("sbx.cli.Engine", return_value=engine), \
+         mock.patch("sbx.cli._open_console", return_value=None), \
+         mock.patch("sbx.cli._session", return_value=RUNNER_FAILED):
+        result = runner.invoke(main, ["start", "whatever"])
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert result.output.strip().startswith("error:")
+    assert "sbx-runner.log" in result.output
