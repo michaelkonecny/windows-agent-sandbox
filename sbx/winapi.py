@@ -4,6 +4,7 @@ Grows incrementally — each phase adds the API calls it needs.
 """
 
 import ctypes
+import os
 from ctypes import wintypes
 
 # ── DLLs ────────────────────────────────────────────────────
@@ -1994,3 +1995,43 @@ def lock_process(pid: int, sddl: str) -> None:
         set_kernel_object_dacl(proc, sddl)
     finally:
         close_handle(proc)
+
+
+kernel32.GetProcessTimes.argtypes = [
+    wintypes.HANDLE, ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint64),
+    ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint64),
+]
+kernel32.GetProcessTimes.restype = wintypes.BOOL
+
+
+def _creation_time(process: int) -> int:
+    created, exited, kernel, user = (ctypes.c_uint64() for _ in range(4))
+    if not kernel32.GetProcessTimes(
+        process, ctypes.byref(created), ctypes.byref(exited),
+        ctypes.byref(kernel), ctypes.byref(user),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return created.value
+
+
+def own_children() -> list[int]:
+    """PIDs of processes this process started and that still run.
+
+    A snapshot's parent PID is only a number: PIDs are reused, so an old
+    process whose long-gone parent had our PID also matches. Keep only
+    children we can open (our own children run under our token) that were
+    created after us.
+    """
+    me = _creation_time(kernel32.GetCurrentProcess())
+    out = []
+    for pid in child_pids(os.getpid()):
+        try:
+            h = open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION)
+        except OSError:
+            continue
+        try:
+            if _creation_time(h) >= me:
+                out.append(pid)
+        finally:
+            close_handle(h)
+    return out

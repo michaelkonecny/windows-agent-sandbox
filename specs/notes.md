@@ -20,7 +20,11 @@ Deviations from `plan.md` and follow-ups noticed during implementation.
   constraints: the runner must create the pseudo-console before locking its
   default DACL (CreatePseudoConsole fails with access denied after), and it
   then locks conhost too; a console has no EOF, so piped stdin ending types
-  `exit`.
+  `exit`. Finding conhost: the runner's children by parent PID, filtered to
+  ones it can open and created after it — PIDs are reused, so a stale process
+  whose dead parent had the runner's PID matched and made the lock fail
+  intermittently. Children also inherit "ignore Ctrl+C"; the runner clears
+  it before creating the shell, or Ctrl+C in the sandbox does nothing.
 
 - Shell launched without `CREATE_NO_WINDOW` — restricted tokens cannot create a
   new console subsystem. The shell inherits the runner's hidden console instead.

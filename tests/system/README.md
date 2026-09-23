@@ -25,6 +25,7 @@ Preconditions, checked at session start: `EnableLUA=1`, `ConsentPromptBehaviorAd
 
 - `probes.py` — per-shell probe snippets. Each prints one line, `PROBE <id> OK|DENIED`, and tests assert only on those lines.
 - `hostwin.py` — host-side Win32 queries (process owner, elevation, Job Object PIDs, firewall rules, ACLs).
-- `syshelp.py` — `sbx` CLI driver, one-shot and live sessions (60 s limit each).
+- `syshelp.py` — `sbx` CLI driver, one-shot and live sessions (60 s limit each), piped or typed into a hosted cmd.
+- `console.py` — `ConsoleSession`: cmd.exe hosted in a ConPTY the test types into (interactive-console tests 100-107).
 - `conftest.py` — opt-in gate, de-elevation, preconditions, fixture projects, session-end uninstall.
-- `test_sys_*.py` — tests 74-99. They run in number order, with 80 (uninstall) last.
+- `test_sys_*.py` — tests 74-106. They run in number order, with 80 (uninstall) last. Tests 81-98 run twice per shell — piped and typed into a hosted cmd (`via` parameter); the typed run is test 107.

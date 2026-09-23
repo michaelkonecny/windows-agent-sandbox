@@ -247,11 +247,21 @@ def open_console():
     return c
 
 
+RUNNER_LOG = Path(r"C:\Users\Public\sbx-runner.log")
+
+
 def enter_sandbox(c, ref: str | Path, shell: Shell) -> None:
     """Type `sbx start <ref>` and wait for the sandbox's `SBX>` prompt."""
     c.line(f"{SBX_TYPED} start {ref}")
     c.line(shell.set_prompt())
-    c.expect("SBX>", SESSION_TIMEOUT)
+    try:
+        c.expect("SBX>", SESSION_TIMEOUT)
+    except TimeoutError as e:
+        try:
+            log = RUNNER_LOG.read_text(encoding="utf-8", errors="replace")
+        except OSError as err:
+            log = f"(unreadable: {err})"
+        raise TimeoutError(f"{e}\n--- runner log ---\n{log}") from None
 
 
 def leave_sandbox(c, shell: Shell) -> int:

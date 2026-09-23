@@ -417,7 +417,9 @@ def _execute_runner_inner(
     # after the restricted token and the pseudo-console: both need to
     # reopen objects the runner creates, which the locked default DACL denies.
     lock = f"D:(A;;GA;;;SY)(A;;GA;;;{host_sid})"
-    conhosts = winapi.child_pids(os.getpid())
+    conhosts = winapi.own_children()
+    if not conhosts:
+        raise ProcessError("pseudo-console host not found; refusing to run it unlocked")
     winapi.lock_current_process(lock)
     for pid in conhosts:
         winapi.lock_process(pid, lock)
